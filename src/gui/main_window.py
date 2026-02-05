@@ -379,6 +379,7 @@ class ControlGUI:
         self.subtitle_lines = []  # Store recent subtitle lines for multi-line display
         self.max_subtitle_lines = 3  # Maximum lines to show at once
         self.is_multiline_mode = False  # Track current display mode
+        self.subtitle_visible = False  # Track if subtitle is currently shown
         self._drag_data = {"x": 0, "y": 0}
         self.device_list = []
         self.diarization_enabled = False
@@ -923,18 +924,19 @@ class ControlGUI:
                                        fg=self.config.subtitle_font_color,
                                        bg=self.config.subtitle_bg_color)
 
-        # Single-line subtitle labels (default mode)
+        # Single-line subtitle labels (default mode) - start empty, no "Waiting for audio"
         self.subtitle_shadow_label = tk.Label(self.background_canvas, text="",
                                                font=font_tuple,
                                                fg='#1c1c1c',
                                                bg=self.config.subtitle_bg_color,
                                                wraplength=900, justify="center")
-        self.subtitle_label = tk.Label(self.background_canvas, text="Waiting for audio...",
+        self.subtitle_label = tk.Label(self.background_canvas, text="",
                                         font=font_tuple,
                                         fg=self.config.subtitle_font_color,
                                         bg=self.config.subtitle_bg_color,
                                         wraplength=900, justify="center")
-        self.subtitle_label.place(relx=0.5, rely=0.5, anchor="center")
+        # Don't place yet - only show when there's actual text
+        self.subtitle_visible = False
 
         # Multi-line frame (hidden by default, used when diarization is active)
         self.subtitle_frame = tk.Frame(self.background_canvas, bg=self.config.subtitle_bg_color)
@@ -1020,20 +1022,27 @@ class ControlGUI:
                 if self.is_multiline_mode:
                     self._switch_to_singleline_mode()
 
-                # Update speaker label
-                if speaker and self.config.show_speaker_colors and self.speaker_label:
-                    self.speaker_label.config(text=speaker, fg=speaker_color or "#FFFFFF",
-                                               bg=self.config.subtitle_bg_color)
-                    self.speaker_label.place(relx=0.5, rely=0.3, anchor="center")
-                elif self.speaker_label:
-                    self.speaker_label.place_forget()
+                # Only show if there's actual text
+                if text and text.strip():
+                    # Show the subtitle label if not visible
+                    if not self.subtitle_visible:
+                        self.subtitle_label.place(relx=0.5, rely=0.5, anchor="center")
+                        self.subtitle_visible = True
 
-                # Update main subtitle
-                self.subtitle_label.config(text=text or "...")
-                if self.subtitle_shadow_label and self.config.text_shadow:
-                    self.subtitle_shadow_label.config(text=text or "...")
-                    self.subtitle_shadow_label.place(relx=0.5, rely=0.5, anchor="center", x=2, y=2)
-                    self.subtitle_label.lift()
+                    # Update speaker label
+                    if speaker and self.config.show_speaker_colors and self.speaker_label:
+                        self.speaker_label.config(text=speaker, fg=speaker_color or "#FFFFFF",
+                                                   bg=self.config.subtitle_bg_color)
+                        self.speaker_label.place(relx=0.5, rely=0.3, anchor="center")
+                    elif self.speaker_label:
+                        self.speaker_label.place_forget()
+
+                    # Update main subtitle
+                    self.subtitle_label.config(text=text)
+                    if self.subtitle_shadow_label and self.config.text_shadow:
+                        self.subtitle_shadow_label.config(text=text)
+                        self.subtitle_shadow_label.place(relx=0.5, rely=0.5, anchor="center", x=2, y=2)
+                        self.subtitle_label.lift()
 
         except tk.TclError:
             return
@@ -1074,8 +1083,12 @@ class ControlGUI:
         # Hide multi-line frame
         self.subtitle_frame.place_forget()
 
-        # Show single-line subtitle
-        self.subtitle_label.place(relx=0.5, rely=0.5, anchor="center")
+        # Only show single-line subtitle if there's text
+        if self.last_subtitle and self.last_subtitle.strip():
+            self.subtitle_label.place(relx=0.5, rely=0.5, anchor="center")
+            self.subtitle_visible = True
+        else:
+            self.subtitle_visible = False
 
     def _update_multiline_subtitle(self):
         """Update the multi-line subtitle display"""
