@@ -119,7 +119,8 @@ class TranslationHistoryPanel:
 
         self.text_widget = tk.Text(text_frame, font=("Consolas", 10),
                                     yscrollcommand=scrollbar_y.set,
-                                    state='disabled', wrap='word')
+                                    state='disabled', wrap='word',
+                                    bg='#1e1e1e', fg='#FFFFFF')  # Dark background, white text
         self.text_widget.pack(side='left', fill='both', expand=True)
         scrollbar_y.config(command=self.text_widget.yview)
 
@@ -127,7 +128,7 @@ class TranslationHistoryPanel:
         for i, color in enumerate(SPEAKER_COLORS):
             self.text_widget.tag_configure(f"speaker_{i+1}", foreground=color, font=("Consolas", 10, "bold"))
         self.text_widget.tag_configure("timestamp", foreground="#888888")
-        self.text_widget.tag_configure("text", foreground="#FFFFFF")
+        self.text_widget.tag_configure("text", foreground="#E0E0E0")  # Light gray for better readability
 
         # Populate with existing history
         self._refresh_list()
@@ -375,6 +376,8 @@ class ControlGUI:
         self.last_speaker = None
         self.last_speaker_color = None
         self.subtitle_history = []
+        self.subtitle_lines = []  # Store recent subtitle lines for multi-line display
+        self.max_subtitle_lines = 3  # Maximum lines to show at once
         self._drag_data = {"x": 0, "y": 0}
         self.device_list = []
         self.diarization_enabled = False
@@ -909,18 +912,26 @@ class ControlGUI:
 
         self.background_rect = self.background_canvas.create_rectangle(0, 0, 0, 0, outline="", width=0)
 
-        # Speaker label (positioned above subtitle)
+        # Create frame for multi-line subtitles
+        self.subtitle_frame = tk.Frame(self.background_canvas, bg=self.config.subtitle_bg_color)
+        self.subtitle_frame.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Speaker label (positioned above subtitle) - kept for compatibility
         self.speaker_label = tk.Label(self.background_canvas, text="", font=("Helvetica", 12, "bold"),
                                        bg=self.config.subtitle_bg_color)
-        self.speaker_label.place(relx=0.5, rely=0.25, anchor="center")
 
-        self.subtitle_shadow_label = tk.Label(self.background_canvas, text="", wraplength=900, justify="center")
-        self.subtitle_label = tk.Label(self.background_canvas, text="Waiting for audio...", wraplength=900, justify="center")
+        # Shadow and main label for single-line mode
+        self.subtitle_shadow_label = tk.Label(self.subtitle_frame, text="", wraplength=900, justify="center")
+        self.subtitle_label = tk.Label(self.subtitle_frame, text="Waiting for audio...", wraplength=900, justify="center")
+
+        # Multi-line labels (for showing recent translations)
+        self.multi_line_labels = []
+        self.subtitle_lines = []  # Reset on window creation
 
         self.update_subtitle_style()
 
         self.subtitle_window.bind("<Escape>", self.stop_translator)
-        for widget in [self.subtitle_label, self.subtitle_shadow_label, self.background_canvas, self.speaker_label]:
+        for widget in [self.subtitle_label, self.subtitle_shadow_label, self.background_canvas, self.speaker_label, self.subtitle_frame]:
             widget.bind("<ButtonPress-1>", self.start_drag)
             widget.bind("<ButtonRelease-1>", self.stop_drag)
             widget.bind("<B1-Motion>", self.do_drag)
@@ -936,7 +947,7 @@ class ControlGUI:
             self.subtitle_window = None
 
     def update_subtitle_text(self, data):
-        """Update subtitle with speaker info support"""
+        """Update subtitle with speaker info support - shows multiple lines for different speakers"""
         if not self.subtitle_label or not self.subtitle_label.winfo_exists():
             return
 
@@ -962,18 +973,57 @@ class ControlGUI:
         self.last_speaker_color = speaker_color
 
         try:
-            # Update speaker label
-            if speaker and self.config.show_speaker_colors and self.speaker_label:
-                self.speaker_label.config(text=speaker, fg=speaker_color or "#FFFFFF",
-                                           bg=self.config.subtitle_bg_color)
-                self.speaker_label.place(relx=0.5, rely=0.2, anchor="center")
-            elif self.speaker_label:
-                self.speaker_label.place_forget()
+            # Check if we have speaker diarization enabled and should show multi-line
+            use_multiline = (self.diarization_enabled and
+                           self.config.use_speaker_diarization and
+                           speaker is not None)
 
-            # Update main subtitle
-            self.subtitle_label.config(text=text or "...")
-            if self.subtitle_shadow_label:
-                self.subtitle_shadow_label.config(text=text or "...")
+            if use_multiline:
+                # Add new line to subtitle_lines
+                new_line = {
+                    'text': text,
+                    'speaker': speaker,
+                    'color': speaker_color or self.config.subtitle_font_color
+                }
+                self.subtitle_lines.append(new_line)
+
+                # Keep only the last N lines
+                if len(self.subtitle_lines) > self.max_subtitle_lines:
+                    self.subtitle_lines = self.subtitle_lines[-self.max_subtitle_lines:]
+
+                # Update multi-line display
+                self._update_multiline_subtitle()
+
+                # Hide single-line elements
+                self.speaker_label.place_forget()
+                self.subtitle_label.pack_forget()
+                if self.subtitle_shadow_label:
+                    self.subtitle_shadow_label.pack_forget()
+            else:
+                # Single-line mode (original behavior)
+                # Clear multi-line labels if any
+                for lbl in self.multi_line_labels:
+                    try:
+                        lbl.destroy()
+                    except:
+                        pass
+                self.multi_line_labels = []
+
+                # Show single-line subtitle
+                self.subtitle_label.pack()
+
+                # Update speaker label
+                if speaker and self.config.show_speaker_colors and self.speaker_label:
+                    self.speaker_label.config(text=speaker, fg=speaker_color or "#FFFFFF",
+                                               bg=self.config.subtitle_bg_color)
+                    self.speaker_label.place(relx=0.5, rely=0.15, anchor="center")
+                elif self.speaker_label:
+                    self.speaker_label.place_forget()
+
+                # Update main subtitle
+                self.subtitle_label.config(text=text or "...")
+                if self.subtitle_shadow_label:
+                    self.subtitle_shadow_label.config(text=text or "...")
 
         except tk.TclError:
             return
@@ -985,6 +1035,65 @@ class ControlGUI:
 
         self._update_background_size()
         self._resize_window_if_needed()
+
+    def _update_multiline_subtitle(self):
+        """Update the multi-line subtitle display"""
+        if not self.subtitle_frame or not self.subtitle_frame.winfo_exists():
+            return
+
+        # Clear existing multi-line labels
+        for lbl in self.multi_line_labels:
+            try:
+                lbl.destroy()
+            except:
+                pass
+        self.multi_line_labels = []
+
+        # Hide single-line elements
+        self.subtitle_label.pack_forget()
+        if self.subtitle_shadow_label:
+            self.subtitle_shadow_label.pack_forget()
+
+        font_size = self.config.font_size
+        font_weight = self.config.font_weight
+
+        # Create labels for each line (older lines more faded)
+        for i, line_data in enumerate(self.subtitle_lines):
+            # Calculate opacity based on position (newer = brighter)
+            is_newest = (i == len(self.subtitle_lines) - 1)
+
+            # Create frame for this line
+            line_frame = tk.Frame(self.subtitle_frame, bg=self.config.subtitle_bg_color)
+            line_frame.pack(pady=2, fill='x')
+
+            # Speaker label
+            speaker_text = f"[{line_data['speaker']}] " if line_data['speaker'] else ""
+            if speaker_text:
+                speaker_lbl = tk.Label(line_frame, text=speaker_text,
+                                        font=("Helvetica", font_size - 2, "bold"),
+                                        fg=line_data['color'],
+                                        bg=self.config.subtitle_bg_color)
+                speaker_lbl.pack(side='left')
+                self.multi_line_labels.append(speaker_lbl)
+
+            # Text label - newer lines are brighter
+            if is_newest:
+                text_color = self.config.subtitle_font_color
+                text_font = ("Helvetica", font_size, font_weight)
+            else:
+                # Fade older lines slightly
+                text_color = "#AAAAAA"  # Dimmer color for older lines
+                text_font = ("Helvetica", font_size - 2, font_weight)
+
+            text_lbl = tk.Label(line_frame, text=line_data['text'],
+                                 font=text_font,
+                                 fg=text_color,
+                                 bg=self.config.subtitle_bg_color,
+                                 wraplength=800, justify="left")
+            text_lbl.pack(side='left', fill='x', expand=True)
+
+            self.multi_line_labels.append(line_frame)
+            self.multi_line_labels.append(text_lbl)
 
     def _update_background_size(self):
         if not self.subtitle_window or not self.background_canvas.winfo_exists():
@@ -1239,6 +1348,8 @@ class ControlGUI:
                 self.subtitle_shadow_label.config(font=font_tuple, fg='#1c1c1c', bg=self.config.subtitle_bg_color)
             if self.speaker_label and self.speaker_label.winfo_exists():
                 self.speaker_label.config(bg=self.config.subtitle_bg_color)
+            if hasattr(self, 'subtitle_frame') and self.subtitle_frame and self.subtitle_frame.winfo_exists():
+                self.subtitle_frame.config(bg=self.config.subtitle_bg_color)
             if self.background_canvas and self.background_rect:
                 self.background_canvas.itemconfig(self.background_rect, fill=self.config.subtitle_bg_color,
                                                    outline=self.config.border_color, width=self.config.border_width)
