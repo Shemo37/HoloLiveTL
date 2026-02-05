@@ -1,0 +1,21 @@
+{
+    "volume_threshold": 0.006,
+    "chunk_duration": 5,
+    "language_code": "en",
+    "window_opacity": 0.85,
+    "font_size": 20,
+    "use_vad_filter": true,
+    "vad_threshold": 0.12,
+    "subtitle_bg_color": "#282828",
+    "subtitle_font_color": "#00ffff",
+    "subtitle_bg_mode": "transparent",
+    "font_weight": "bold",
+    "text_shadow": true,
+    "border_width": 2,
+    "border_color": "#000000",
+    "output_mode": "translate",
+    "use_dynamic_chunking": true,
+    "dynamic_max_chunk_duration": 7.0,
+    "dynamic_silence_timeout": 1.3,
+    "dynamic_min_speech_duration": 1.2
+}
