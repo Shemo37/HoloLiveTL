@@ -913,15 +913,27 @@ class ControlGUI:
 
         self.background_rect = self.background_canvas.create_rectangle(0, 0, 0, 0, outline="", width=0)
 
+        # Get font settings
+        font_size = self.config.font_size
+        font_weight = self.config.font_weight
+        font_tuple = ("Helvetica", font_size, font_weight)
+
         # Speaker label (positioned above subtitle) - kept for compatibility
         self.speaker_label = tk.Label(self.background_canvas, text="", font=("Helvetica", 12, "bold"),
+                                       fg=self.config.subtitle_font_color,
                                        bg=self.config.subtitle_bg_color)
 
         # Single-line subtitle labels (default mode)
-        self.subtitle_shadow_label = tk.Label(self.background_canvas, text="", wraplength=900, justify="center",
-                                               bg=self.config.subtitle_bg_color)
-        self.subtitle_label = tk.Label(self.background_canvas, text="Waiting for audio...", wraplength=900, justify="center",
-                                        bg=self.config.subtitle_bg_color)
+        self.subtitle_shadow_label = tk.Label(self.background_canvas, text="",
+                                               font=font_tuple,
+                                               fg='#1c1c1c',
+                                               bg=self.config.subtitle_bg_color,
+                                               wraplength=900, justify="center")
+        self.subtitle_label = tk.Label(self.background_canvas, text="Waiting for audio...",
+                                        font=font_tuple,
+                                        fg=self.config.subtitle_font_color,
+                                        bg=self.config.subtitle_bg_color,
+                                        wraplength=900, justify="center")
         self.subtitle_label.place(relx=0.5, rely=0.5, anchor="center")
 
         # Multi-line frame (hidden by default, used when diarization is active)
@@ -933,7 +945,8 @@ class ControlGUI:
         self.subtitle_lines = []  # Reset on window creation
         self.is_multiline_mode = False  # Track current display mode
 
-        self.update_subtitle_style()
+        # Apply initial style
+        self._apply_subtitle_style()
 
         self.subtitle_window.bind("<Escape>", self.stop_translator)
         for widget in [self.subtitle_label, self.subtitle_shadow_label, self.background_canvas, self.speaker_label, self.subtitle_frame]:
@@ -1362,27 +1375,66 @@ class ControlGUI:
         if not self.subtitle_window or not self.subtitle_label.winfo_exists():
             return
         try:
-            font_size = int(self.font_var.get())
-            font_weight = self.font_weight_var.get()
+            # Update config from UI variables
+            self.config.font_size = int(self.font_var.get())
+            self.config.font_weight = self.font_weight_var.get()
+            self._apply_subtitle_style()
+        except (ValueError, tk.TclError):
+            pass
+
+    def _apply_subtitle_style(self):
+        """Apply current style settings to subtitle window"""
+        if not self.subtitle_window or not self.subtitle_label.winfo_exists():
+            return
+        try:
+            font_size = self.config.font_size
+            font_weight = self.config.font_weight
             font_tuple = ("Helvetica", font_size, font_weight)
 
-            self.subtitle_label.config(font=font_tuple, fg=self.config.subtitle_font_color, bg=self.config.subtitle_bg_color)
+            # Update main subtitle label
+            self.subtitle_label.config(
+                font=font_tuple,
+                fg=self.config.subtitle_font_color,
+                bg=self.config.subtitle_bg_color
+            )
+
+            # Update shadow label
             if self.subtitle_shadow_label and self.subtitle_shadow_label.winfo_exists():
-                self.subtitle_shadow_label.config(font=font_tuple, fg='#1c1c1c', bg=self.config.subtitle_bg_color)
+                self.subtitle_shadow_label.config(
+                    font=font_tuple,
+                    fg='#1c1c1c',
+                    bg=self.config.subtitle_bg_color
+                )
+
+            # Update speaker label
             if self.speaker_label and self.speaker_label.winfo_exists():
-                self.speaker_label.config(bg=self.config.subtitle_bg_color)
+                self.speaker_label.config(
+                    fg=self.config.subtitle_font_color,
+                    bg=self.config.subtitle_bg_color
+                )
+
+            # Update multi-line frame
             if hasattr(self, 'subtitle_frame') and self.subtitle_frame and self.subtitle_frame.winfo_exists():
                 self.subtitle_frame.config(bg=self.config.subtitle_bg_color)
+
+            # Update background
             if self.background_canvas and self.background_rect:
-                self.background_canvas.itemconfig(self.background_rect, fill=self.config.subtitle_bg_color,
-                                                   outline=self.config.border_color, width=self.config.border_width)
+                self.background_canvas.itemconfig(
+                    self.background_rect,
+                    fill=self.config.subtitle_bg_color,
+                    outline=self.config.border_color,
+                    width=self.config.border_width
+                )
+
+            # Update window transparency
             if self.config.subtitle_bg_mode == 'transparent':
                 self.subtitle_window.wm_attributes("-alpha", self.config.window_opacity)
             else:
                 self.subtitle_window.wm_attributes("-alpha", 1.0)
+
             self._update_background_size()
-        except (ValueError, tk.TclError):
-            pass
+        except (ValueError, tk.TclError) as e:
+            logger.debug(f"Error applying subtitle style: {e}")
 
     def on_device_select(self, *args):
         self.config.selected_audio_device = self.device_var.get()
