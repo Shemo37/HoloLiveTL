@@ -1,11 +1,11 @@
 """
-Main GUI window for Live Translator - Enhanced Version
+Main GUI window for Live Translator - Enhanced Version with Speaker Diarization
 """
 import time
 import threading
 from queue import Queue, Empty
 import tkinter as tk
-from tkinter import ttk, messagebox, Toplevel, Label, colorchooser
+from tkinter import ttk, messagebox, Toplevel, Label, colorchooser, simpledialog
 from datetime import datetime
 import json
 import os
@@ -16,7 +16,7 @@ import logging
 from collections import deque
 
 # Import our modular components
-from modules.config import Config
+from modules.config import Config, SPEAKER_COLORS
 from modules.stats import TranslatorStats
 from modules.audio_utils import find_audio_device
 from modules.recorder import recorder_thread
@@ -66,13 +66,13 @@ except ImportError:
 
 
 class TranslationHistoryPanel:
-    """Separate panel for displaying translation history"""
+    """Separate panel for displaying translation history with speaker info"""
     def __init__(self, parent, on_copy_callback=None):
         self.parent = parent
         self.on_copy = on_copy_callback
-        self.history = []
+        self.history = []  # List of (timestamp, speaker, text, color) tuples
         self.window = None
-        self.listbox = None
+        self.text_widget = None
         self.is_visible = False
 
     def show(self):
@@ -83,8 +83,8 @@ class TranslationHistoryPanel:
 
         self.window = tk.Toplevel(self.parent)
         self.window.title("Translation History")
-        self.window.geometry("500x400")
-        self.window.minsize(400, 300)
+        self.window.geometry("600x450")
+        self.window.minsize(500, 350)
         self.is_visible = True
 
         # Main frame
@@ -103,8 +103,6 @@ class TranslationHistoryPanel:
         btn_frame = tk.Frame(header_frame)
         btn_frame.pack(side='right')
 
-        tk.Button(btn_frame, text="Copy Selected", command=self._copy_selected,
-                  width=12).pack(side='left', padx=2)
         tk.Button(btn_frame, text="Copy All", command=self._copy_all,
                   width=10).pack(side='left', padx=2)
         tk.Button(btn_frame, text="Clear", command=self._clear_history,
@@ -112,28 +110,24 @@ class TranslationHistoryPanel:
         tk.Button(btn_frame, text="Export", command=self._export_history,
                   width=8).pack(side='left', padx=2)
 
-        # Listbox with scrollbar
-        list_frame = tk.Frame(main_frame)
-        list_frame.pack(fill='both', expand=True)
+        # Text widget with scrollbar (supports colors)
+        text_frame = tk.Frame(main_frame)
+        text_frame.pack(fill='both', expand=True)
 
-        scrollbar_y = tk.Scrollbar(list_frame, orient='vertical')
+        scrollbar_y = tk.Scrollbar(text_frame, orient='vertical')
         scrollbar_y.pack(side='right', fill='y')
 
-        scrollbar_x = tk.Scrollbar(list_frame, orient='horizontal')
-        scrollbar_x.pack(side='bottom', fill='x')
+        self.text_widget = tk.Text(text_frame, font=("Consolas", 10),
+                                    yscrollcommand=scrollbar_y.set,
+                                    state='disabled', wrap='word')
+        self.text_widget.pack(side='left', fill='both', expand=True)
+        scrollbar_y.config(command=self.text_widget.yview)
 
-        self.listbox = tk.Listbox(list_frame, font=("Consolas", 10),
-                                   yscrollcommand=scrollbar_y.set,
-                                   xscrollcommand=scrollbar_x.set,
-                                   selectmode=tk.EXTENDED)
-        self.listbox.pack(side='left', fill='both', expand=True)
-
-        scrollbar_y.config(command=self.listbox.yview)
-        scrollbar_x.config(command=self.listbox.xview)
-
-        # Bind double-click to copy
-        self.listbox.bind('<Double-Button-1>', lambda e: self._copy_selected())
-        self.listbox.bind('<Control-c>', lambda e: self._copy_selected())
+        # Configure tags for speaker colors
+        for i, color in enumerate(SPEAKER_COLORS):
+            self.text_widget.tag_configure(f"speaker_{i+1}", foreground=color, font=("Consolas", 10, "bold"))
+        self.text_widget.tag_configure("timestamp", foreground="#888888")
+        self.text_widget.tag_configure("text", foreground="#FFFFFF")
 
         # Populate with existing history
         self._refresh_list()
@@ -145,46 +139,60 @@ class TranslationHistoryPanel:
         if self.window:
             self.window.destroy()
             self.window = None
-            self.listbox = None
+            self.text_widget = None
 
-    def add_translation(self, text, timestamp=None):
+    def add_translation(self, text, speaker=None, speaker_color=None, timestamp=None):
         if not text or not text.strip():
             return
         if timestamp is None:
             timestamp = datetime.now()
-        entry = f"[{timestamp:%H:%M:%S}] {text}"
-        self.history.append(entry)
 
-        if self.listbox and self.listbox.winfo_exists():
-            self.listbox.insert(tk.END, entry)
-            self.listbox.see(tk.END)
+        self.history.append({
+            'timestamp': timestamp,
+            'speaker': speaker,
+            'text': text,
+            'color': speaker_color
+        })
+
+        if self.text_widget and self.text_widget.winfo_exists():
+            self._add_entry_to_widget(self.history[-1])
+            self.text_widget.see(tk.END)
             self.count_label.config(text=f"Total: {len(self.history)} translations")
 
-    def _refresh_list(self):
-        if not self.listbox:
-            return
-        self.listbox.delete(0, tk.END)
-        for entry in self.history:
-            self.listbox.insert(tk.END, entry)
-        if self.history:
-            self.listbox.see(tk.END)
+    def _add_entry_to_widget(self, entry):
+        self.text_widget.config(state='normal')
 
-    def _copy_selected(self):
-        if not self.listbox:
+        # Add timestamp
+        self.text_widget.insert(tk.END, f"[{entry['timestamp']:%H:%M:%S}] ", "timestamp")
+
+        # Add speaker label if present
+        if entry['speaker']:
+            speaker_num = int(entry['speaker'].split()[-1]) if entry['speaker'].startswith('Speaker') else 1
+            tag = f"speaker_{speaker_num}"
+            self.text_widget.insert(tk.END, f"[{entry['speaker']}] ", tag)
+
+        # Add text
+        self.text_widget.insert(tk.END, f"{entry['text']}\n", "text")
+
+        self.text_widget.config(state='disabled')
+
+    def _refresh_list(self):
+        if not self.text_widget:
             return
-        selection = self.listbox.curselection()
-        if not selection:
-            return
-        texts = [self.listbox.get(i) for i in selection]
-        text = '\n'.join(texts)
-        self.parent.clipboard_clear()
-        self.parent.clipboard_append(text)
-        logger.info(f"Copied {len(selection)} translation(s) to clipboard")
+        self.text_widget.config(state='normal')
+        self.text_widget.delete('1.0', tk.END)
+        for entry in self.history:
+            self._add_entry_to_widget(entry)
+        self.text_widget.config(state='disabled')
 
     def _copy_all(self):
         if not self.history:
             return
-        text = '\n'.join(self.history)
+        lines = []
+        for entry in self.history:
+            speaker_part = f"[{entry['speaker']}] " if entry['speaker'] else ""
+            lines.append(f"[{entry['timestamp']:%H:%M:%S}] {speaker_part}{entry['text']}")
+        text = '\n'.join(lines)
         self.parent.clipboard_clear()
         self.parent.clipboard_append(text)
         logger.info(f"Copied all {len(self.history)} translations to clipboard")
@@ -192,8 +200,10 @@ class TranslationHistoryPanel:
     def _clear_history(self):
         if messagebox.askyesno("Clear History", "Are you sure you want to clear all translation history?"):
             self.history.clear()
-            if self.listbox:
-                self.listbox.delete(0, tk.END)
+            if self.text_widget:
+                self.text_widget.config(state='normal')
+                self.text_widget.delete('1.0', tk.END)
+                self.text_widget.config(state='disabled')
                 self.count_label.config(text="Total: 0 translations")
             logger.info("Translation history cleared")
 
@@ -204,7 +214,9 @@ class TranslationHistoryPanel:
         filename = f"translations_{datetime.now():%Y%m%d_%H%M%S}.txt"
         try:
             with open(filename, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(self.history))
+                for entry in self.history:
+                    speaker_part = f"[{entry['speaker']}] " if entry['speaker'] else ""
+                    f.write(f"[{entry['timestamp']:%H:%M:%S}] {speaker_part}{entry['text']}\n")
             messagebox.showinfo("Export", f"Translations exported to:\n{filename}")
             logger.info(f"Exported {len(self.history)} translations to {filename}")
         except Exception as e:
@@ -232,11 +244,9 @@ class StatisticsPanel:
         main_frame = tk.Frame(self.window, padx=15, pady=15)
         main_frame.pack(fill='both', expand=True)
 
-        # Title
         tk.Label(main_frame, text="Session Statistics",
                  font=("Helvetica", 14, "bold")).pack(pady=(0, 15))
 
-        # Stats grid
         stats_frame = tk.Frame(main_frame)
         stats_frame.pack(fill='x')
 
@@ -260,7 +270,6 @@ class StatisticsPanel:
 
         stats_frame.columnconfigure(1, weight=1)
 
-        # Reset button
         tk.Button(main_frame, text="Reset Statistics", command=self._reset_stats,
                   width=15).pack(pady=(20, 0))
 
@@ -316,23 +325,16 @@ class SubtitlePositionControl:
     def create(self, container):
         self.frame = tk.LabelFrame(container, text="Subtitle Position", padx=10, pady=10)
 
-        # Position presets
         preset_frame = tk.Frame(self.frame)
         preset_frame.pack(fill='x', pady=(0, 5))
 
         tk.Label(preset_frame, text="Quick Position:").pack(side='left')
 
-        positions = [
-            ("Top", "top"),
-            ("Center", "center"),
-            ("Bottom", "bottom"),
-        ]
-
+        positions = [("Top", "top"), ("Center", "center"), ("Bottom", "bottom")]
         for text, pos in positions:
             tk.Button(preset_frame, text=text, width=8,
                       command=lambda p=pos: self.on_position_change(p)).pack(side='left', padx=2)
 
-        # Manual offset controls
         offset_frame = tk.Frame(self.frame)
         offset_frame.pack(fill='x', pady=5)
 
@@ -357,23 +359,27 @@ class ControlGUI:
         self.gui_queue = gui_queue
 
         self.root.title("Live Audio Translator")
-        self.root.geometry("650x900")
+        self.root.geometry("680x950")
         self.root.resizable(True, True)
-        self.root.minsize(600, 700)
+        self.root.minsize(650, 750)
 
         self.worker_threads = []
         self.stop_event = None
         self.subtitle_window = None
         self.subtitle_label = None
         self.subtitle_shadow_label = None
+        self.speaker_label = None  # NEW: Label for speaker indicator
         self.background_canvas = None
         self.background_rect = None
         self.last_subtitle = ""
+        self.last_speaker = None
+        self.last_speaker_color = None
         self.subtitle_history = []
         self._drag_data = {"x": 0, "y": 0}
         self.device_list = []
+        self.diarization_enabled = False
 
-        # New panels
+        # Panels
         self.history_panel = TranslationHistoryPanel(self.root)
         self.stats_panel = StatisticsPanel(self.root, self.stats)
 
@@ -392,7 +398,6 @@ class ControlGUI:
         self._bind_keyboard_shortcuts()
 
     def _bind_keyboard_shortcuts(self):
-        """Bind global keyboard shortcuts"""
         self.root.bind('<Control-q>', lambda e: self.on_close())
         self.root.bind('<F5>', lambda e: self.start_translator())
         self.root.bind('<F6>', lambda e: self.stop_translator())
@@ -428,9 +433,8 @@ class ControlGUI:
         self.root.after(100, self._process_log_queue)
 
     def _process_log_queue(self):
-        messages_to_process = 100
         batch = []
-        for _ in range(messages_to_process):
+        for _ in range(100):
             try:
                 message = self.log_queue.get_nowait()
                 batch.append(message)
@@ -446,7 +450,7 @@ class ControlGUI:
         self.root.after(100, self._process_log_queue)
 
     def setup_ui(self):
-        # Create main scrollable frame
+        # Scrollable main frame
         main_canvas = tk.Canvas(self.root)
         scrollbar = tk.Scrollbar(self.root, orient="vertical", command=main_canvas.yview)
         self.scrollable_frame = tk.Frame(main_canvas)
@@ -459,11 +463,9 @@ class ControlGUI:
         main_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         main_canvas.configure(yscrollcommand=scrollbar.set)
 
-        # Pack scrollbar and canvas
         scrollbar.pack(side="right", fill="y")
         main_canvas.pack(side="left", fill="both", expand=True)
 
-        # Enable mousewheel scrolling
         def _on_mousewheel(event):
             main_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
         main_canvas.bind_all("<MouseWheel>", _on_mousewheel)
@@ -472,14 +474,10 @@ class ControlGUI:
         header_frame = tk.Frame(self.scrollable_frame)
         header_frame.pack(pady=10, padx=20, fill='x')
 
-        title_label = tk.Label(header_frame, text="Live Audio Translator",
-                               font=("Helvetica", 18, "bold"))
-        title_label.pack()
-
-        subtitle_info = tk.Label(header_frame,
-                                  text="Real-time Japanese to English translation for VTuber streams",
-                                  font=("Helvetica", 9), fg="grey")
-        subtitle_info.pack()
+        tk.Label(header_frame, text="Live Audio Translator",
+                 font=("Helvetica", 18, "bold")).pack()
+        tk.Label(header_frame, text="Real-time Japanese to English translation with Speaker Diarization",
+                 font=("Helvetica", 9), fg="grey").pack()
 
         # Audio device selection
         device_frame = tk.LabelFrame(self.scrollable_frame, text="Audio Device", padx=10, pady=10)
@@ -492,13 +490,12 @@ class ControlGUI:
         self.device_menu = tk.OptionMenu(device_row, self.device_var, "Loading...")
         self.device_menu.pack(side="left", padx=5, expand=True, fill='x')
 
-        tk.Button(device_row, text="Refresh", command=self.refresh_devices,
-                  width=8).pack(side="right", padx=5)
+        tk.Button(device_row, text="Refresh", command=self.refresh_devices, width=8).pack(side="right", padx=5)
 
         self.refresh_devices()
         self.device_var.trace_add('write', self.on_device_select)
 
-        # Status and control buttons
+        # Status
         status_frame = tk.Frame(self.scrollable_frame)
         status_frame.pack(pady=10, padx=20, fill='x')
 
@@ -506,6 +503,11 @@ class ControlGUI:
                                       font=("Helvetica", 11, "bold"), fg="green")
         self.status_label.pack()
 
+        self.diarization_status_label = tk.Label(status_frame, text="Speaker Diarization: Disabled",
+                                                   font=("Helvetica", 9), fg="gray")
+        self.diarization_status_label.pack()
+
+        # Control buttons
         button_frame = tk.Frame(self.scrollable_frame)
         button_frame.pack(pady=5, padx=20)
 
@@ -529,14 +531,11 @@ class ControlGUI:
         quick_frame = tk.Frame(self.scrollable_frame)
         quick_frame.pack(pady=5, padx=20)
 
-        tk.Button(quick_frame, text="History (Ctrl+H)", command=self.history_panel.show,
-                  width=14).pack(side="left", padx=3)
-        tk.Button(quick_frame, text="Statistics", command=self.stats_panel.show,
-                  width=12).pack(side="left", padx=3)
-        tk.Button(quick_frame, text="Log (Ctrl+L)", command=self.open_log_window,
-                  width=12).pack(side="left", padx=3)
+        tk.Button(quick_frame, text="History (Ctrl+H)", command=self.history_panel.show, width=14).pack(side="left", padx=3)
+        tk.Button(quick_frame, text="Statistics", command=self.stats_panel.show, width=12).pack(side="left", padx=3)
+        tk.Button(quick_frame, text="Log (Ctrl+L)", command=self.open_log_window, width=12).pack(side="left", padx=3)
 
-        # Settings container with notebook tabs
+        # Settings notebook
         settings_notebook = ttk.Notebook(self.scrollable_frame)
         settings_notebook.pack(pady=10, padx=20, fill='x')
 
@@ -544,52 +543,106 @@ class ControlGUI:
         audio_tab = tk.Frame(settings_notebook, padx=10, pady=10)
         settings_notebook.add(audio_tab, text="Audio")
 
-        # Dynamic chunking settings
-        dynamic_frame = tk.LabelFrame(audio_tab, text="Dynamic Chunking (Recommended)", padx=10, pady=10)
+        # Dynamic chunking
+        dynamic_frame = tk.LabelFrame(audio_tab, text="Dynamic Chunking", padx=10, pady=10)
         dynamic_frame.pack(pady=5, fill="x")
 
         self.dynamic_chunk_var = tk.BooleanVar(value=self.config.use_dynamic_chunking)
-        self.dynamic_chunk_check = tk.Checkbutton(dynamic_frame,
-                                                   text="Enable Dynamic Chunks",
-                                                   variable=self.dynamic_chunk_var,
-                                                   font=("Helvetica", 10))
-        self.dynamic_chunk_check.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 5))
+        tk.Checkbutton(dynamic_frame, text="Enable Dynamic Chunks (Recommended)",
+                       variable=self.dynamic_chunk_var, font=("Helvetica", 10)).grid(row=0, column=0, columnspan=4, sticky="w")
 
         tk.Label(dynamic_frame, text="Silence Timeout (s):").grid(row=1, column=0, sticky="w", pady=2)
         self.dyn_silence_var = tk.StringVar(value=str(self.config.dynamic_silence_timeout))
-        self.dyn_silence_entry = tk.Entry(dynamic_frame, textvariable=self.dyn_silence_var, width=8)
-        self.dyn_silence_entry.grid(row=1, column=1, padx=5, sticky="w")
+        tk.Entry(dynamic_frame, textvariable=self.dyn_silence_var, width=8).grid(row=1, column=1, padx=5, sticky="w")
 
-        tk.Label(dynamic_frame, text="Max Duration (s):").grid(row=1, column=2, sticky="w", pady=2, padx=(10,0))
+        tk.Label(dynamic_frame, text="Max Duration (s):").grid(row=1, column=2, sticky="w", padx=(10,0))
         self.dyn_max_dur_var = tk.StringVar(value=str(self.config.dynamic_max_chunk_duration))
-        self.dyn_max_dur_entry = tk.Entry(dynamic_frame, textvariable=self.dyn_max_dur_var, width=8)
-        self.dyn_max_dur_entry.grid(row=1, column=3, padx=5, sticky="w")
+        tk.Entry(dynamic_frame, textvariable=self.dyn_max_dur_var, width=8).grid(row=1, column=3, padx=5, sticky="w")
 
         tk.Label(dynamic_frame, text="Min Speech (s):").grid(row=2, column=0, sticky="w", pady=2)
         self.dyn_min_speech_var = tk.StringVar(value=str(self.config.dynamic_min_speech_duration))
-        self.dyn_min_speech_entry = tk.Entry(dynamic_frame, textvariable=self.dyn_min_speech_var, width=8)
-        self.dyn_min_speech_entry.grid(row=2, column=1, padx=5, sticky="w")
+        tk.Entry(dynamic_frame, textvariable=self.dyn_min_speech_var, width=8).grid(row=2, column=1, padx=5, sticky="w")
 
         # VAD settings
         vad_frame = tk.LabelFrame(audio_tab, text="Voice Activity Detection", padx=10, pady=10)
         vad_frame.pack(pady=5, fill="x")
 
         self.vad_var = tk.BooleanVar(value=self.config.use_vad_filter)
-        self.vad_check = tk.Checkbutton(vad_frame, text="Enable VAD Filter",
-                                         variable=self.vad_var, font=("Helvetica", 10))
-        self.vad_check.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        tk.Checkbutton(vad_frame, text="Enable VAD Filter", variable=self.vad_var, font=("Helvetica", 10)).grid(row=0, column=0, columnspan=2, sticky="w")
 
         tk.Label(vad_frame, text="Volume Threshold:").grid(row=1, column=0, sticky="w", pady=2)
         self.volume_var = tk.StringVar(value=str(self.config.volume_threshold))
-        self.volume_entry = tk.Entry(vad_frame, textvariable=self.volume_var, width=8)
-        self.volume_entry.grid(row=1, column=1, padx=5, sticky="w")
+        tk.Entry(vad_frame, textvariable=self.volume_var, width=8).grid(row=1, column=1, padx=5, sticky="w")
 
         tk.Label(vad_frame, text="VAD Threshold (%):").grid(row=2, column=0, sticky="w", pady=2)
         self.vad_threshold_var = tk.StringVar(value=str(int(self.config.vad_threshold * 100)))
-        self.vad_threshold_entry = tk.Entry(vad_frame, textvariable=self.vad_threshold_var, width=8)
-        self.vad_threshold_entry.grid(row=2, column=1, padx=5, sticky="w")
+        tk.Entry(vad_frame, textvariable=self.vad_threshold_var, width=8).grid(row=2, column=1, padx=5, sticky="w")
 
-        # Tab 2: Appearance Settings
+        # Tab 2: Speaker Diarization (NEW)
+        diarization_tab = tk.Frame(settings_notebook, padx=10, pady=10)
+        settings_notebook.add(diarization_tab, text="Speakers")
+
+        # Enable diarization
+        enable_frame = tk.LabelFrame(diarization_tab, text="Speaker Diarization", padx=10, pady=10)
+        enable_frame.pack(pady=5, fill="x")
+
+        self.diarization_var = tk.BooleanVar(value=self.config.use_speaker_diarization)
+        tk.Checkbutton(enable_frame, text="Enable Speaker Diarization",
+                       variable=self.diarization_var, font=("Helvetica", 10, "bold")).pack(anchor='w')
+
+        tk.Label(enable_frame, text="Identifies different speakers in the audio stream",
+                 font=("Helvetica", 9), fg="gray").pack(anchor='w', pady=(0, 5))
+
+        tk.Label(enable_frame, text="Note: Requires ~4GB additional VRAM and HuggingFace token",
+                 font=("Helvetica", 9), fg="orange").pack(anchor='w')
+
+        # HuggingFace token
+        token_frame = tk.LabelFrame(diarization_tab, text="HuggingFace Token", padx=10, pady=10)
+        token_frame.pack(pady=5, fill="x")
+
+        tk.Label(token_frame, text="Required for pyannote speaker diarization model",
+                 font=("Helvetica", 9), fg="gray").pack(anchor='w')
+
+        token_row = tk.Frame(token_frame)
+        token_row.pack(fill='x', pady=5)
+
+        self.hf_token_var = tk.StringVar(value=self.config.hf_token or "")
+        self.hf_token_entry = tk.Entry(token_row, textvariable=self.hf_token_var, width=40, show="*")
+        self.hf_token_entry.pack(side="left", padx=5, expand=True, fill='x')
+
+        self.show_token_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(token_row, text="Show", variable=self.show_token_var,
+                       command=self._toggle_token_visibility).pack(side="left", padx=5)
+
+        tk.Label(token_frame, text="Get token at: https://huggingface.co/settings/tokens",
+                 font=("Helvetica", 8), fg="blue", cursor="hand2").pack(anchor='w')
+
+        # Speaker settings
+        speaker_settings_frame = tk.LabelFrame(diarization_tab, text="Speaker Settings", padx=10, pady=10)
+        speaker_settings_frame.pack(pady=5, fill="x")
+
+        tk.Label(speaker_settings_frame, text="Min Speakers:").grid(row=0, column=0, sticky="w", pady=2)
+        self.min_speakers_var = tk.StringVar(value=str(self.config.min_speakers))
+        tk.Entry(speaker_settings_frame, textvariable=self.min_speakers_var, width=5).grid(row=0, column=1, padx=5, sticky="w")
+
+        tk.Label(speaker_settings_frame, text="Max Speakers:").grid(row=0, column=2, sticky="w", pady=2, padx=(10,0))
+        self.max_speakers_var = tk.StringVar(value=str(self.config.max_speakers))
+        tk.Entry(speaker_settings_frame, textvariable=self.max_speakers_var, width=5).grid(row=0, column=3, padx=5, sticky="w")
+
+        self.show_speaker_colors_var = tk.BooleanVar(value=self.config.show_speaker_colors)
+        tk.Checkbutton(speaker_settings_frame, text="Show speaker colors in subtitle",
+                       variable=self.show_speaker_colors_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=5)
+
+        # Speaker color preview
+        color_frame = tk.Frame(speaker_settings_frame)
+        color_frame.grid(row=2, column=0, columnspan=4, sticky="w", pady=5)
+
+        tk.Label(color_frame, text="Speaker Colors:").pack(side="left")
+        for i, color in enumerate(SPEAKER_COLORS[:5]):
+            lbl = tk.Label(color_frame, text=f" {i+1} ", bg=color, fg="white", font=("Helvetica", 9, "bold"))
+            lbl.pack(side="left", padx=2)
+
+        # Tab 3: Appearance
         appearance_tab = tk.Frame(settings_notebook, padx=10, pady=10)
         settings_notebook.add(appearance_tab, text="Appearance")
 
@@ -603,27 +656,20 @@ class ControlGUI:
         self.font_entry.grid(row=0, column=1, padx=5, sticky="w")
         self.font_entry.bind('<KeyRelease>', self.update_subtitle_style)
 
-        tk.Label(font_frame, text="Font Weight:").grid(row=0, column=2, sticky="w", pady=2, padx=(10, 0))
+        tk.Label(font_frame, text="Font Weight:").grid(row=0, column=2, sticky="w", padx=(10, 0))
         self.font_weight_var = tk.StringVar(value=self.config.font_weight)
-        self.font_weight_menu = tk.OptionMenu(font_frame, self.font_weight_var,
-                                               'normal', 'bold',
-                                               command=self.on_font_weight_change)
-        self.font_weight_menu.grid(row=0, column=3, padx=5, sticky="w")
+        tk.OptionMenu(font_frame, self.font_weight_var, 'normal', 'bold',
+                      command=self.on_font_weight_change).grid(row=0, column=3, padx=5, sticky="w")
 
         tk.Label(font_frame, text="Font Color:").grid(row=1, column=0, sticky="w", pady=2)
-        self.font_color_var = tk.StringVar(value=self.config.subtitle_font_color)
         self.font_color_btn = tk.Button(font_frame, text="Pick", command=self.pick_font_color, width=6)
         self.font_color_btn.grid(row=1, column=1, padx=5, sticky="w")
-        self.font_color_display = tk.Label(font_frame, text='    ',
-                                            bg=self.config.subtitle_font_color,
-                                            relief="solid", borderwidth=1)
+        self.font_color_display = tk.Label(font_frame, text='    ', bg=self.config.subtitle_font_color, relief="solid", borderwidth=1)
         self.font_color_display.grid(row=1, column=2, padx=5, sticky="w")
 
         self.text_shadow_var = tk.BooleanVar(value=getattr(self.config, 'text_shadow', True))
-        self.text_shadow_check = tk.Checkbutton(font_frame, text="Text Shadow",
-                                                 variable=self.text_shadow_var,
-                                                 command=self.on_text_shadow_change)
-        self.text_shadow_check.grid(row=1, column=3, sticky="w", pady=2)
+        tk.Checkbutton(font_frame, text="Text Shadow", variable=self.text_shadow_var,
+                       command=self.on_text_shadow_change).grid(row=1, column=3, sticky="w")
 
         # Background settings
         bg_frame = tk.LabelFrame(appearance_tab, text="Background Settings", padx=10, pady=10)
@@ -631,79 +677,66 @@ class ControlGUI:
 
         tk.Label(bg_frame, text="BG Mode:").grid(row=0, column=0, sticky="w", pady=2)
         self.bg_mode_var = tk.StringVar(value=self.config.subtitle_bg_mode)
-        self.bg_mode_menu = tk.OptionMenu(bg_frame, self.bg_mode_var,
-                                           'transparent', 'solid',
-                                           command=self.set_bg_mode)
-        self.bg_mode_menu.grid(row=0, column=1, padx=5, sticky="w")
+        tk.OptionMenu(bg_frame, self.bg_mode_var, 'transparent', 'solid',
+                      command=self.set_bg_mode).grid(row=0, column=1, padx=5, sticky="w")
 
-        tk.Label(bg_frame, text="Opacity (%):").grid(row=0, column=2, sticky="w", pady=2, padx=(10,0))
+        tk.Label(bg_frame, text="Opacity (%):").grid(row=0, column=2, sticky="w", padx=(10,0))
         self.opacity_var = tk.StringVar(value=str(int(self.config.window_opacity * 100)))
         self.opacity_entry = tk.Entry(bg_frame, textvariable=self.opacity_var, width=8)
         self.opacity_entry.grid(row=0, column=3, padx=5, sticky="w")
         self.opacity_entry.bind('<KeyRelease>', self.on_opacity_change)
 
         tk.Label(bg_frame, text="BG Color:").grid(row=1, column=0, sticky="w", pady=2)
-        self.bg_color_var = tk.StringVar(value=self.config.subtitle_bg_color)
         self.bg_color_btn = tk.Button(bg_frame, text="Pick", command=self.pick_bg_color, width=6)
         self.bg_color_btn.grid(row=1, column=1, padx=5, sticky="w")
-        self.bg_color_display = tk.Label(bg_frame, text='    ',
-                                          bg=self.config.subtitle_bg_color,
-                                          relief="solid", borderwidth=1)
+        self.bg_color_display = tk.Label(bg_frame, text='    ', bg=self.config.subtitle_bg_color, relief="solid", borderwidth=1)
         self.bg_color_display.grid(row=1, column=2, padx=5, sticky="w")
 
-        # Subtitle position controls
+        # Position controls
         self.position_control = SubtitlePositionControl(self.root, self.on_subtitle_position_change)
-        position_frame = self.position_control.create(appearance_tab)
-        position_frame.pack(pady=5, fill="x")
+        self.position_control.create(appearance_tab).pack(pady=5, fill="x")
 
-        # Tab 3: Presets
+        # Tab 4: Presets
         presets_tab = tk.Frame(settings_notebook, padx=10, pady=10)
         settings_notebook.add(presets_tab, text="Presets")
 
-        # Load preset
         load_frame = tk.LabelFrame(presets_tab, text="Load Preset", padx=10, pady=10)
         load_frame.pack(pady=5, fill="x")
 
         self.preset_var = tk.StringVar()
         self.preset_menu = tk.OptionMenu(load_frame, self.preset_var, "No presets found")
         self.preset_menu.pack(side="left", padx=5, expand=True, fill='x')
-        self.load_preset_button = tk.Button(load_frame, text="Load", command=self.load_preset, width=8)
-        self.load_preset_button.pack(side="left", padx=5)
+        tk.Button(load_frame, text="Load", command=self.load_preset, width=8).pack(side="left", padx=5)
 
-        # Save preset
         save_frame = tk.LabelFrame(presets_tab, text="Save Preset", padx=10, pady=10)
         save_frame.pack(pady=5, fill="x")
 
         self.save_preset_name_var = tk.StringVar()
-        self.save_preset_entry = tk.Entry(save_frame, textvariable=self.save_preset_name_var)
-        self.save_preset_entry.pack(side="left", padx=5, expand=True, fill='x')
-        self.save_preset_button = tk.Button(save_frame, text="Save", command=self.save_preset, width=8)
-        self.save_preset_button.pack(side="left", padx=5)
+        tk.Entry(save_frame, textvariable=self.save_preset_name_var).pack(side="left", padx=5, expand=True, fill='x')
+        tk.Button(save_frame, text="Save", command=self.save_preset, width=8).pack(side="left", padx=5)
 
-        # Preset management
         mgmt_frame = tk.Frame(presets_tab)
         mgmt_frame.pack(pady=10, fill='x')
-
-        tk.Button(mgmt_frame, text="Refresh List", command=self.refresh_preset_list,
-                  width=12).pack(side="left", padx=5)
-        tk.Button(mgmt_frame, text="Reset to Defaults", command=self.reset_to_defaults,
-                  width=14).pack(side="left", padx=5)
+        tk.Button(mgmt_frame, text="Refresh List", command=self.refresh_preset_list, width=12).pack(side="left", padx=5)
+        tk.Button(mgmt_frame, text="Reset to Defaults", command=self.reset_to_defaults, width=14).pack(side="left", padx=5)
 
         self.refresh_preset_list()
 
-        # Keyboard shortcuts info
+        # Shortcuts info
         shortcuts_frame = tk.LabelFrame(self.scrollable_frame, text="Keyboard Shortcuts", padx=10, pady=5)
         shortcuts_frame.pack(pady=10, padx=20, fill='x')
 
-        shortcuts_text = (
-            "F5: Start  |  F6: Stop  |  Ctrl+H: History  |  Ctrl+L: Log  |  Ctrl+Q: Quit\n"
-            "Subtitle Window: Drag to move  |  Ctrl+C: Copy  |  Ctrl+S: Save  |  Esc: Stop"
-        )
-        tk.Label(shortcuts_frame, text=shortcuts_text, font=("Consolas", 9),
-                 justify="center").pack(pady=5)
+        tk.Label(shortcuts_frame, text="F5: Start  |  F6: Stop  |  Ctrl+H: History  |  Ctrl+L: Log  |  Ctrl+Q: Quit\n"
+                                        "Subtitle Window: Drag to move  |  Ctrl+C: Copy  |  Ctrl+S: Save  |  Esc: Stop",
+                 font=("Consolas", 9), justify="center").pack(pady=5)
+
+    def _toggle_token_visibility(self):
+        if self.show_token_var.get():
+            self.hf_token_entry.config(show="")
+        else:
+            self.hf_token_entry.config(show="*")
 
     def on_subtitle_position_change(self, position):
-        """Handle subtitle window position changes"""
         if not self.subtitle_window or not self.subtitle_window.winfo_exists():
             return
 
@@ -714,45 +747,35 @@ class ControlGUI:
 
         current_x = self.subtitle_window.winfo_x()
         current_y = self.subtitle_window.winfo_y()
-
-        move_step = 50  # pixels for fine-tune movement
+        move_step = 50
 
         if position == "top":
-            new_x = (screen_width - win_width) // 2
-            new_y = 50
+            new_x, new_y = (screen_width - win_width) // 2, 50
         elif position == "center":
-            new_x = (screen_width - win_width) // 2
-            new_y = (screen_height - win_height) // 2
+            new_x, new_y = (screen_width - win_width) // 2, (screen_height - win_height) // 2
         elif position == "bottom":
-            new_x = (screen_width - win_width) // 2
-            new_y = screen_height - win_height - 100
+            new_x, new_y = (screen_width - win_width) // 2, screen_height - win_height - 100
         elif position == "up":
-            new_x = current_x
-            new_y = max(0, current_y - move_step)
+            new_x, new_y = current_x, max(0, current_y - move_step)
         elif position == "down":
-            new_x = current_x
-            new_y = min(screen_height - win_height, current_y + move_step)
+            new_x, new_y = current_x, min(screen_height - win_height, current_y + move_step)
         elif position == "left":
-            new_x = max(0, current_x - move_step)
-            new_y = current_y
+            new_x, new_y = max(0, current_x - move_step), current_y
         elif position == "right":
-            new_x = min(screen_width - win_width, current_x + move_step)
-            new_y = current_y
+            new_x, new_y = min(screen_width - win_width, current_x + move_step), current_y
         else:
             return
 
         self.subtitle_window.geometry(f"+{new_x}+{new_y}")
 
     def reset_to_defaults(self):
-        """Reset all settings to default values"""
-        if not messagebox.askyesno("Reset Settings",
-                                    "Are you sure you want to reset all settings to defaults?"):
+        if not messagebox.askyesno("Reset Settings", "Reset all settings to defaults?"):
             return
 
-        # Reset config to defaults
         from modules.config import (VOLUME_THRESHOLD, USE_VAD_FILTER, VAD_THRESHOLD,
                                     DEFAULT_BG_COLOR, DEFAULT_FONT_COLOR,
-                                    DEFAULT_BG_MODE, DEFAULT_WINDOW_OPACITY)
+                                    DEFAULT_BG_MODE, DEFAULT_WINDOW_OPACITY,
+                                    DEFAULT_USE_DIARIZATION, DEFAULT_MIN_SPEAKERS, DEFAULT_MAX_SPEAKERS)
 
         self.config.volume_threshold = VOLUME_THRESHOLD
         self.config.use_vad_filter = USE_VAD_FILTER
@@ -768,6 +791,9 @@ class ControlGUI:
         self.config.dynamic_silence_timeout = 1.2
         self.config.dynamic_max_chunk_duration = 15.0
         self.config.dynamic_min_speech_duration = 0.3
+        self.config.use_speaker_diarization = DEFAULT_USE_DIARIZATION
+        self.config.min_speakers = DEFAULT_MIN_SPEAKERS
+        self.config.max_speakers = DEFAULT_MAX_SPEAKERS
 
         # Update UI
         self.volume_var.set(str(self.config.volume_threshold))
@@ -784,17 +810,20 @@ class ControlGUI:
         self.dyn_silence_var.set(str(self.config.dynamic_silence_timeout))
         self.dyn_max_dur_var.set(str(self.config.dynamic_max_chunk_duration))
         self.dyn_min_speech_var.set(str(self.config.dynamic_min_speech_duration))
+        self.diarization_var.set(self.config.use_speaker_diarization)
+        self.min_speakers_var.set(str(self.config.min_speakers))
+        self.max_speakers_var.set(str(self.config.max_speakers))
 
         self.update_subtitle_style()
         self.config.save_config()
-        logger.info("Settings reset to defaults")
-        messagebox.showinfo("Reset", "All settings have been reset to defaults.")
+        messagebox.showinfo("Reset", "All settings reset to defaults.")
 
     def refresh_devices(self):
         self.device_list = sc.all_microphones(include_loopback=True)
         device_names = [mic.name for mic in self.device_list]
         menu = self.device_menu["menu"]
         menu.delete(0, "end")
+
         if not device_names:
             menu.add_command(label="No devices found", state="disabled")
             self.device_var.set("No devices found")
@@ -810,8 +839,6 @@ class ControlGUI:
                     self.device_var.set(preferred_device.name)
                 elif device_names:
                     self.device_var.set(device_names[0])
-                else:
-                    self.device_var.set("No devices found")
 
     def get_selected_device_name(self):
         selected_name = self.device_var.get()
@@ -829,7 +856,7 @@ class ControlGUI:
         self.start_button.config(state="normal")
         self.stop_button.config(state="disabled")
         self.status_label.config(text="Status: Stopped", fg="red")
-        logger.info("Translator stopped.")
+        self.diarization_status_label.config(text="Speaker Diarization: Disabled", fg="gray")
 
     def check_gui_queue(self):
         try:
@@ -840,10 +867,17 @@ class ControlGUI:
                 elif msg_type == "model_loaded":
                     self.status_label.config(text="Status: Running", fg="green")
                     self.stop_button.config(state="normal")
+                elif msg_type == "diarization_status":
+                    if data:
+                        self.diarization_status_label.config(text="Speaker Diarization: ENABLED", fg="green")
+                        self.diarization_enabled = True
+                    else:
+                        self.diarization_status_label.config(text="Speaker Diarization: Disabled", fg="gray")
+                        self.diarization_enabled = False
                 elif msg_type == "error":
                     self.status_label.config(text="Status: Error!", fg="red")
                     if self.subtitle_label:
-                        self.update_subtitle_text(f"ERROR: {data}")
+                        self.update_subtitle_text({"text": f"ERROR: {data}", "display_text": f"ERROR: {data}"})
                     self.stop_translator()
                     return
         except Empty:
@@ -855,14 +889,13 @@ class ControlGUI:
     def create_subtitle_window(self):
         if self.subtitle_window:
             return
+
         self.subtitle_window = tk.Toplevel(self.root)
         self.subtitle_window.overrideredirect(True)
 
-        # Position at bottom center of screen
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        win_width = 1000
-        win_height = 200
+        win_width, win_height = 1000, 200
         x = (screen_width - win_width) // 2
         y = screen_height - win_height - 100
 
@@ -876,16 +909,18 @@ class ControlGUI:
 
         self.background_rect = self.background_canvas.create_rectangle(0, 0, 0, 0, outline="", width=0)
 
-        self.subtitle_shadow_label = tk.Label(self.background_canvas, text="",
-                                               wraplength=900, justify="center")
-        self.subtitle_label = tk.Label(self.background_canvas, text="Waiting for audio...",
-                                        wraplength=900, justify="center")
+        # Speaker label (positioned above subtitle)
+        self.speaker_label = tk.Label(self.background_canvas, text="", font=("Helvetica", 12, "bold"),
+                                       bg=self.config.subtitle_bg_color)
+        self.speaker_label.place(relx=0.5, rely=0.25, anchor="center")
+
+        self.subtitle_shadow_label = tk.Label(self.background_canvas, text="", wraplength=900, justify="center")
+        self.subtitle_label = tk.Label(self.background_canvas, text="Waiting for audio...", wraplength=900, justify="center")
 
         self.update_subtitle_style()
 
-        # Bindings
         self.subtitle_window.bind("<Escape>", self.stop_translator)
-        for widget in [self.subtitle_label, self.subtitle_shadow_label, self.background_canvas]:
+        for widget in [self.subtitle_label, self.subtitle_shadow_label, self.background_canvas, self.speaker_label]:
             widget.bind("<ButtonPress-1>", self.start_drag)
             widget.bind("<ButtonRelease-1>", self.stop_drag)
             widget.bind("<B1-Motion>", self.do_drag)
@@ -900,26 +935,56 @@ class ControlGUI:
                 pass
             self.subtitle_window = None
 
-    def update_subtitle_text(self, text):
+    def update_subtitle_text(self, data):
+        """Update subtitle with speaker info support"""
         if not self.subtitle_label or not self.subtitle_label.winfo_exists():
             return
-        if text != self.last_subtitle:
-            self.last_subtitle = text
-            display_text = text or "..."
-            try:
-                self.subtitle_label.config(text=display_text)
-                if self.subtitle_shadow_label:
-                    self.subtitle_shadow_label.config(text=display_text)
-            except tk.TclError:
-                return
 
-            if text.strip() and "ERROR" not in text:
-                timestamp = datetime.now()
-                self.subtitle_history.append(f"[{timestamp:%H:%M:%S}] {text}")
-                self.history_panel.add_translation(text, timestamp)
+        # Handle both string and dict data formats
+        if isinstance(data, str):
+            text = data
+            display_text = data
+            speaker = None
+            speaker_color = None
+            confidence = None
+        else:
+            text = data.get('text', '')
+            display_text = data.get('display_text', text)
+            speaker = data.get('speaker')
+            speaker_color = data.get('speaker_color')
+            confidence = data.get('confidence')
 
-            self._update_background_size()
-            self._resize_window_if_needed()
+        if text == self.last_subtitle and speaker == self.last_speaker:
+            return
+
+        self.last_subtitle = text
+        self.last_speaker = speaker
+        self.last_speaker_color = speaker_color
+
+        try:
+            # Update speaker label
+            if speaker and self.config.show_speaker_colors and self.speaker_label:
+                self.speaker_label.config(text=speaker, fg=speaker_color or "#FFFFFF",
+                                           bg=self.config.subtitle_bg_color)
+                self.speaker_label.place(relx=0.5, rely=0.2, anchor="center")
+            elif self.speaker_label:
+                self.speaker_label.place_forget()
+
+            # Update main subtitle
+            self.subtitle_label.config(text=text or "...")
+            if self.subtitle_shadow_label:
+                self.subtitle_shadow_label.config(text=text or "...")
+
+        except tk.TclError:
+            return
+
+        if text.strip() and "ERROR" not in text:
+            timestamp = datetime.now()
+            self.subtitle_history.append(f"[{timestamp:%H:%M:%S}] {display_text}")
+            self.history_panel.add_translation(text, speaker, speaker_color, timestamp)
+
+        self._update_background_size()
+        self._resize_window_if_needed()
 
     def _update_background_size(self):
         if not self.subtitle_window or not self.background_canvas.winfo_exists():
@@ -930,10 +995,8 @@ class ControlGUI:
             label_width = self.subtitle_label.winfo_reqwidth()
             label_height = self.subtitle_label.winfo_reqheight()
 
-            min_width = 200
-            min_height = 50
-            label_width = max(label_width, min_width)
-            label_height = max(label_height, min_height)
+            label_width = max(label_width, 200)
+            label_height = max(label_height, 50)
 
             canvas_width = self.background_canvas.winfo_width()
             canvas_height = self.background_canvas.winfo_height()
@@ -946,67 +1009,50 @@ class ControlGUI:
             x1 = (canvas_width + label_width) / 2 + padding_x
             y1 = (canvas_height + label_height) / 2 + padding_y
 
-            x0 = max(0, x0)
-            y0 = max(0, y0)
-            x1 = min(canvas_width, x1)
-            y1 = min(canvas_height, y1)
+            self.background_canvas.coords(self.background_rect, max(0, x0), max(0, y0),
+                                           min(canvas_width, x1), min(canvas_height, y1))
 
-            self.background_canvas.coords(self.background_rect, x0, y0, x1, y1)
-
-            self.subtitle_label.place(relx=0.5, rely=0.5, anchor="center")
+            self.subtitle_label.place(relx=0.5, rely=0.55, anchor="center")
 
             if self.config.text_shadow and self.subtitle_shadow_label.winfo_exists():
-                shadow_offset = 2
-                self.subtitle_shadow_label.place(
-                    x=self.subtitle_label.winfo_x() + shadow_offset,
-                    y=self.subtitle_label.winfo_y() + shadow_offset
-                )
+                self.subtitle_shadow_label.place(x=self.subtitle_label.winfo_x() + 2,
+                                                  y=self.subtitle_label.winfo_y() + 2)
                 self.background_canvas.tag_lower(self.background_rect)
                 self.subtitle_shadow_label.lift()
                 self.subtitle_label.lift()
+                if self.speaker_label:
+                    self.speaker_label.lift()
             elif self.subtitle_shadow_label.winfo_exists():
                 self.subtitle_shadow_label.place_forget()
 
-        except tk.TclError as e:
-            logger.debug(f"Error updating background size: {e}")
+        except tk.TclError:
+            pass
 
     def _resize_window_if_needed(self):
         if not self.subtitle_window or not self.subtitle_label.winfo_exists():
             return
-
         try:
             label_width = self.subtitle_label.winfo_reqwidth()
             label_height = self.subtitle_label.winfo_reqheight()
 
-            padding_x = 60
-            padding_y = 60
-
-            required_width = max(800, label_width + padding_x)
-            required_height = max(150, label_height + padding_y)
+            required_width = max(800, label_width + 60)
+            required_height = max(150, label_height + 80)
 
             current_width = self.subtitle_window.winfo_width()
             current_height = self.subtitle_window.winfo_height()
 
-            width_diff = abs(required_width - current_width)
-            height_diff = abs(required_height - current_height)
-
-            if width_diff > 50 or height_diff > 30:
-                x = self.subtitle_window.winfo_x()
-                y = self.subtitle_window.winfo_y()
-
+            if abs(required_width - current_width) > 50 or abs(required_height - current_height) > 30:
+                x, y = self.subtitle_window.winfo_x(), self.subtitle_window.winfo_y()
                 self.subtitle_window.geometry(f"{required_width}x{required_height}+{x}+{y}")
                 self.background_canvas.configure(width=required_width-40, height=required_height-40)
-
                 new_wraplength = max(400, required_width - 80)
                 self.subtitle_label.configure(wraplength=new_wraplength)
                 if self.subtitle_shadow_label:
                     self.subtitle_shadow_label.configure(wraplength=new_wraplength)
-
                 self.subtitle_window.update_idletasks()
                 self._update_background_size()
-
-        except tk.TclError as e:
-            logger.debug(f"Error resizing window: {e}")
+        except tk.TclError:
+            pass
 
     def start_drag(self, event):
         self._drag_data["x"], self._drag_data["y"] = event.x, event.y
@@ -1024,7 +1070,6 @@ class ControlGUI:
         if self.last_subtitle:
             self.root.clipboard_clear()
             self.root.clipboard_append(self.last_subtitle)
-            logger.info(f"Copied subtitle to clipboard")
 
     def save_subtitle_history(self, event=None):
         if self.subtitle_history:
@@ -1032,29 +1077,19 @@ class ControlGUI:
             try:
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write("\n".join(self.subtitle_history))
-                logger.info(f"Saved history to: {filename}")
-                messagebox.showinfo("Saved", f"Translation history saved to:\n{filename}")
+                messagebox.showinfo("Saved", f"History saved to:\n{filename}")
             except Exception as e:
-                logger.error(f"Error saving history: {e}")
                 messagebox.showerror("Error", f"Failed to save: {e}")
 
     def on_close(self):
-        logger.info("Closing application...")
-
         if self.stop_event:
             self.stop_event.set()
-
         self.apply_and_save_settings()
-
-        logger.info("--- Application session ended ---")
         if hasattr(sys, '__stdout__'):
             sys.stdout = sys.__stdout__
             sys.stderr = sys.__stderr__
-
         if self.log_file and not self.log_file.closed:
             self.log_file.close()
-            self.log_file = None
-
         self.root.destroy()
 
     def open_log_window(self):
@@ -1065,24 +1100,18 @@ class ControlGUI:
         self.log_window.title("Application Log")
         self.log_window.geometry("800x500")
 
-        # Toolbar
         toolbar = tk.Frame(self.log_window)
         toolbar.pack(fill='x', padx=5, pady=5)
+        tk.Button(toolbar, text="Clear", command=lambda: self.log_text_widget.delete('1.0', tk.END) if self.log_text_widget else None, width=10).pack(side='left', padx=2)
+        tk.Button(toolbar, text="Copy All", command=lambda: (self.root.clipboard_clear(), self.root.clipboard_append(self.log_text_widget.get('1.0', tk.END))) if self.log_text_widget else None, width=10).pack(side='left', padx=2)
 
-        tk.Button(toolbar, text="Clear Log", command=self._clear_log_display,
-                  width=10).pack(side='left', padx=2)
-        tk.Button(toolbar, text="Copy All", command=self._copy_log,
-                  width=10).pack(side='left', padx=2)
-
-        # Text widget with scrollbar
         text_frame = tk.Frame(self.log_window)
         text_frame.pack(expand=True, fill='both', padx=5, pady=5)
 
         scrollbar = tk.Scrollbar(text_frame)
         scrollbar.pack(side='right', fill='y')
 
-        self.log_text_widget = tk.Text(text_frame, wrap='word', font=("Consolas", 10),
-                                        state='disabled', yscrollcommand=scrollbar.set)
+        self.log_text_widget = tk.Text(text_frame, wrap='word', font=("Consolas", 10), state='disabled', yscrollcommand=scrollbar.set)
         self.log_text_widget.pack(expand=True, fill='both')
         scrollbar.config(command=self.log_text_widget.yview)
 
@@ -1092,37 +1121,17 @@ class ControlGUI:
             self.log_text_widget.see('end')
             self.log_text_widget.config(state='disabled')
 
-        self.log_window.protocol("WM_DELETE_WINDOW", self._on_log_close)
-
-    def _clear_log_display(self):
-        if self.log_text_widget:
-            self.log_text_widget.config(state='normal')
-            self.log_text_widget.delete('1.0', tk.END)
-            self.log_text_widget.config(state='disabled')
-
-    def _copy_log(self):
-        if self.log_text_widget:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(self.log_text_widget.get('1.0', tk.END))
-            logger.info("Log copied to clipboard")
-
-    def _on_log_close(self):
-        if self.log_window:
-            self.log_window.destroy()
-            self.log_window = None
-            self.log_text_widget = None
+        self.log_window.protocol("WM_DELETE_WINDOW", lambda: (self.log_window.destroy(), setattr(self, 'log_window', None), setattr(self, 'log_text_widget', None)))
 
     def pick_bg_color(self):
-        color = colorchooser.askcolor(title="Pick Background Color",
-                                       initialcolor=self.config.subtitle_bg_color)
+        color = colorchooser.askcolor(initialcolor=self.config.subtitle_bg_color)
         if color and color[1]:
             self.config.subtitle_bg_color = color[1]
             self.bg_color_display.config(bg=color[1])
             self.update_subtitle_style()
 
     def pick_font_color(self):
-        color = colorchooser.askcolor(title="Pick Font Color",
-                                       initialcolor=self.config.subtitle_font_color)
+        color = colorchooser.askcolor(initialcolor=self.config.subtitle_font_color)
         if color and color[1]:
             self.config.subtitle_font_color = color[1]
             self.font_color_display.config(bg=color[1])
@@ -1133,28 +1142,32 @@ class ControlGUI:
             self.config.volume_threshold = max(0.0, float(self.volume_var.get()))
             self.config.use_vad_filter = self.vad_var.get()
             self.config.vad_threshold = max(0.0, min(1.0, float(self.vad_threshold_var.get()) / 100.0))
-
             self.config.use_dynamic_chunking = self.dynamic_chunk_var.get()
             self.config.dynamic_silence_timeout = max(0.1, float(self.dyn_silence_var.get()))
             self.config.dynamic_max_chunk_duration = max(1.0, float(self.dyn_max_dur_var.get()))
             self.config.dynamic_min_speech_duration = max(0.1, float(self.dyn_min_speech_var.get()))
-
             self.config.font_size = int(self.font_var.get())
             self.config.window_opacity = max(0.0, min(1.0, float(self.opacity_var.get()) / 100.0))
             self.config.font_weight = self.font_weight_var.get()
             self.config.text_shadow = self.text_shadow_var.get()
             self.config.subtitle_bg_mode = self.bg_mode_var.get()
-
             self.config.selected_audio_device = self.device_var.get()
+
+            # Diarization settings
+            self.config.use_speaker_diarization = self.diarization_var.get()
+            self.config.min_speakers = max(1, min(10, int(self.min_speakers_var.get())))
+            self.config.max_speakers = max(1, min(10, int(self.max_speakers_var.get())))
+            self.config.show_speaker_colors = self.show_speaker_colors_var.get()
+
+            hf_token = self.hf_token_var.get().strip()
+            if hf_token:
+                self.config.hf_token = hf_token
+
             if save_to_disk:
                 self.config.save_config()
-                logger.info("Settings applied and saved.")
-            else:
-                logger.info("Settings applied to current session.")
             return True
         except (ValueError, tk.TclError) as e:
-            messagebox.showerror("Invalid Input",
-                                 f"Please ensure all numeric fields are valid numbers.\nError: {e}")
+            messagebox.showerror("Invalid Input", f"Please check all fields.\nError: {e}")
             return False
 
     def start_translator(self, event=None):
@@ -1162,15 +1175,20 @@ class ControlGUI:
             return
         if not self.apply_and_save_settings():
             return
+
         self.stats.reset()
         self.start_button.config(state="disabled")
         self.stop_button.config(state="disabled")
         self.status_label.config(text="Status: Loading model(s)...", fg="orange")
+
+        if self.config.use_speaker_diarization:
+            self.diarization_status_label.config(text="Speaker Diarization: Loading...", fg="orange")
         self.root.update_idletasks()
 
         self.create_subtitle_window()
         self.stop_event = threading.Event()
         audio_queue = Queue(maxsize=20)
+
         selected_device_name = self.get_selected_device_name()
         if selected_device_name is None:
             messagebox.showerror("Audio Error", "Could not find a valid audio device.")
@@ -1179,12 +1197,10 @@ class ControlGUI:
             return
 
         recorder = threading.Thread(target=recorder_thread,
-                                     args=(self.stop_event, audio_queue, self.config,
-                                           self.gui_queue, selected_device_name),
+                                     args=(self.stop_event, audio_queue, self.config, self.gui_queue, selected_device_name),
                                      daemon=True)
         processor = threading.Thread(target=processor_thread,
-                                       args=(self.stop_event, audio_queue, self.config,
-                                             self.stats, self.gui_queue),
+                                       args=(self.stop_event, audio_queue, self.config, self.stats, self.gui_queue),
                                        daemon=True)
         self.worker_threads = [recorder, processor]
         for t in self.worker_threads:
@@ -1218,16 +1234,14 @@ class ControlGUI:
             font_weight = self.font_weight_var.get()
             font_tuple = ("Helvetica", font_size, font_weight)
 
-            self.subtitle_label.config(font=font_tuple, fg=self.config.subtitle_font_color,
-                                        bg=self.config.subtitle_bg_color)
+            self.subtitle_label.config(font=font_tuple, fg=self.config.subtitle_font_color, bg=self.config.subtitle_bg_color)
             if self.subtitle_shadow_label and self.subtitle_shadow_label.winfo_exists():
-                self.subtitle_shadow_label.config(font=font_tuple, fg='#1c1c1c',
-                                                   bg=self.config.subtitle_bg_color)
+                self.subtitle_shadow_label.config(font=font_tuple, fg='#1c1c1c', bg=self.config.subtitle_bg_color)
+            if self.speaker_label and self.speaker_label.winfo_exists():
+                self.speaker_label.config(bg=self.config.subtitle_bg_color)
             if self.background_canvas and self.background_rect:
-                self.background_canvas.itemconfig(self.background_rect,
-                                                   fill=self.config.subtitle_bg_color,
-                                                   outline=self.config.border_color,
-                                                   width=self.config.border_width)
+                self.background_canvas.itemconfig(self.background_rect, fill=self.config.subtitle_bg_color,
+                                                   outline=self.config.border_color, width=self.config.border_width)
             if self.config.subtitle_bg_mode == 'transparent':
                 self.subtitle_window.wm_attributes("-alpha", self.config.window_opacity)
             else:
@@ -1243,47 +1257,36 @@ class ControlGUI:
         self.status_label.config(text="Status: Downloading model...", fg="blue")
         self.download_button.config(state="disabled")
         self.start_button.config(state="disabled")
-        self.stop_button.config(state="disabled")
         self.root.update_idletasks()
 
         def do_download():
             try:
-                logger.info("Starting model download...")
                 ensure_model_downloaded(MODEL_ID, self.config.model_cache_dir)
-                logger.info("Model downloads/verifications complete.")
-                self.gui_queue.put(("status_update", ("Status: All models are ready!", "green")))
+                self.gui_queue.put(("status_update", ("Status: Models ready!", "green")))
             except Exception as e:
-                error_msg = f"Download failed: {e}"
-                logger.error(error_msg)
-                traceback.print_exc()
-                self.gui_queue.put(("status_update", (f"Status: {error_msg}", "red")))
+                self.gui_queue.put(("status_update", (f"Status: Download failed", "red")))
             finally:
                 self.gui_queue.put(("download_finished", None))
 
-        def process_download_queue():
+        def process_queue():
             try:
                 msg_type, data = self.gui_queue.get_nowait()
                 if msg_type == "status_update":
-                    text, color = data
-                    self.status_label.config(text=text, fg=color)
+                    self.status_label.config(text=data[0], fg=data[1])
                 elif msg_type == "download_finished":
                     self.download_button.config(state="normal")
                     self.start_button.config(state="normal")
-                    if not self.worker_threads:
-                        self.stop_button.config(state="disabled")
                     return
             except Empty:
                 pass
-            self.root.after(100, process_download_queue)
+            self.root.after(100, process_queue)
 
         threading.Thread(target=do_download, daemon=True).start()
-        process_download_queue()
+        process_queue()
 
     def refresh_preset_list(self):
         preset_dir = "presets"
-        if not os.path.exists(preset_dir):
-            os.makedirs(preset_dir, exist_ok=True)
-
+        os.makedirs(preset_dir, exist_ok=True)
         preset_files = [f for f in os.listdir(preset_dir) if f.endswith('.json')]
         presets = [os.path.splitext(f)[0] for f in preset_files]
 
@@ -1294,56 +1297,32 @@ class ControlGUI:
             menu.add_command(label="No presets found", state="disabled")
             self.preset_var.set("No presets found")
         else:
-            for preset_name in sorted(presets):
-                menu.add_command(label=preset_name,
-                                 command=lambda v=preset_name: self.preset_var.set(v))
+            for name in sorted(presets):
+                menu.add_command(label=name, command=lambda v=name: self.preset_var.set(v))
             self.preset_var.set(presets[0])
 
     def save_preset(self):
         preset_name = self.save_preset_name_var.get().strip()
         if not preset_name:
-            messagebox.showwarning("Warning", "Please enter a name for the preset.")
+            messagebox.showwarning("Warning", "Enter a preset name.")
             return
 
         if not self.apply_and_save_settings(save_to_disk=False):
-            messagebox.showerror("Error", "Could not save preset due to invalid settings.")
             return
 
-        preset_data = {
-            "volume_threshold": self.config.volume_threshold,
-            "chunk_duration": self.config.chunk_duration,
-            "language_code": self.config.language_code,
-            "window_opacity": self.config.window_opacity,
-            "font_size": self.config.font_size,
-            "use_vad_filter": self.config.use_vad_filter,
-            "vad_threshold": self.config.vad_threshold,
-            "subtitle_bg_color": self.config.subtitle_bg_color,
-            "subtitle_font_color": self.config.subtitle_font_color,
-            "subtitle_bg_mode": self.config.subtitle_bg_mode,
-            "font_weight": self.config.font_weight,
-            "text_shadow": self.config.text_shadow,
-            "border_width": self.config.border_width,
-            "border_color": self.config.border_color,
-            "output_mode": self.config.output_mode,
-            "use_dynamic_chunking": self.config.use_dynamic_chunking,
-            "dynamic_max_chunk_duration": self.config.dynamic_max_chunk_duration,
-            "dynamic_silence_timeout": self.config.dynamic_silence_timeout,
-            "dynamic_min_speech_duration": self.config.dynamic_min_speech_duration
-        }
+        preset_data = self.config.to_dict()
+        # Don't save sensitive data in presets
+        preset_data.pop('hf_token', None)
 
-        preset_dir = "presets"
-        os.makedirs(preset_dir, exist_ok=True)
-
-        file_path = os.path.join(preset_dir, f"{preset_name}.json")
+        file_path = os.path.join("presets", f"{preset_name}.json")
         try:
             with open(file_path, 'w') as f:
                 json.dump(preset_data, f, indent=4)
-            messagebox.showinfo("Success", f"Preset '{preset_name}' saved successfully.")
+            messagebox.showinfo("Success", f"Preset '{preset_name}' saved.")
             self.refresh_preset_list()
             self.save_preset_name_var.set("")
-            logger.info(f"Preset '{preset_name}' saved")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save preset: {e}")
+            messagebox.showerror("Error", f"Failed to save: {e}")
 
     def load_preset(self):
         preset_name = self.preset_var.get()
@@ -1353,7 +1332,7 @@ class ControlGUI:
 
         file_path = os.path.join("presets", f"{preset_name}.json")
         if not os.path.exists(file_path):
-            messagebox.showerror("Error", f"Preset file not found: {file_path}")
+            messagebox.showerror("Error", "Preset file not found.")
             self.refresh_preset_list()
             return
 
@@ -1362,8 +1341,10 @@ class ControlGUI:
                 preset_data = json.load(f)
 
             for key, value in preset_data.items():
-                setattr(self.config, key, value)
+                if key != 'hf_token':  # Don't overwrite token from preset
+                    setattr(self.config, key, value)
 
+            # Update UI
             self.volume_var.set(str(self.config.volume_threshold))
             self.opacity_var.set(str(int(self.config.window_opacity * 100)))
             self.font_var.set(str(self.config.font_size))
@@ -1374,16 +1355,15 @@ class ControlGUI:
             self.bg_color_display.config(bg=self.config.subtitle_bg_color)
             self.font_color_display.config(bg=self.config.subtitle_font_color)
             self.text_shadow_var.set(self.config.text_shadow)
-
-            if 'use_dynamic_chunking' in preset_data:
-                self.dynamic_chunk_var.set(self.config.use_dynamic_chunking)
-                self.dyn_silence_var.set(str(self.config.dynamic_silence_timeout))
-                self.dyn_max_dur_var.set(str(self.config.dynamic_max_chunk_duration))
-                self.dyn_min_speech_var.set(str(self.config.dynamic_min_speech_duration))
+            self.dynamic_chunk_var.set(self.config.use_dynamic_chunking)
+            self.dyn_silence_var.set(str(self.config.dynamic_silence_timeout))
+            self.dyn_max_dur_var.set(str(self.config.dynamic_max_chunk_duration))
+            self.dyn_min_speech_var.set(str(self.config.dynamic_min_speech_duration))
+            self.diarization_var.set(getattr(self.config, 'use_speaker_diarization', False))
+            self.min_speakers_var.set(str(getattr(self.config, 'min_speakers', 1)))
+            self.max_speakers_var.set(str(getattr(self.config, 'max_speakers', 5)))
 
             self.update_subtitle_style()
-
             messagebox.showinfo("Success", f"Preset '{preset_name}' loaded.")
-            logger.info(f"Preset '{preset_name}' loaded")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load preset: {e}")
+            messagebox.showerror("Error", f"Failed to load: {e}")
