@@ -378,6 +378,7 @@ class ControlGUI:
         self.subtitle_history = []
         self.subtitle_lines = []  # Store recent subtitle lines for multi-line display
         self.max_subtitle_lines = 3  # Maximum lines to show at once
+        self.is_multiline_mode = False  # Track current display mode
         self._drag_data = {"x": 0, "y": 0}
         self.device_list = []
         self.diarization_enabled = False
@@ -912,21 +913,25 @@ class ControlGUI:
 
         self.background_rect = self.background_canvas.create_rectangle(0, 0, 0, 0, outline="", width=0)
 
-        # Create frame for multi-line subtitles
-        self.subtitle_frame = tk.Frame(self.background_canvas, bg=self.config.subtitle_bg_color)
-        self.subtitle_frame.place(relx=0.5, rely=0.5, anchor="center")
-
         # Speaker label (positioned above subtitle) - kept for compatibility
         self.speaker_label = tk.Label(self.background_canvas, text="", font=("Helvetica", 12, "bold"),
                                        bg=self.config.subtitle_bg_color)
 
-        # Shadow and main label for single-line mode
-        self.subtitle_shadow_label = tk.Label(self.subtitle_frame, text="", wraplength=900, justify="center")
-        self.subtitle_label = tk.Label(self.subtitle_frame, text="Waiting for audio...", wraplength=900, justify="center")
+        # Single-line subtitle labels (default mode)
+        self.subtitle_shadow_label = tk.Label(self.background_canvas, text="", wraplength=900, justify="center",
+                                               bg=self.config.subtitle_bg_color)
+        self.subtitle_label = tk.Label(self.background_canvas, text="Waiting for audio...", wraplength=900, justify="center",
+                                        bg=self.config.subtitle_bg_color)
+        self.subtitle_label.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Multi-line frame (hidden by default, used when diarization is active)
+        self.subtitle_frame = tk.Frame(self.background_canvas, bg=self.config.subtitle_bg_color)
+        # Don't place it yet - only show when multi-line mode is active
 
         # Multi-line labels (for showing recent translations)
         self.multi_line_labels = []
         self.subtitle_lines = []  # Reset on window creation
+        self.is_multiline_mode = False  # Track current display mode
 
         self.update_subtitle_style()
 
@@ -979,6 +984,10 @@ class ControlGUI:
                            speaker is not None)
 
             if use_multiline:
+                # Switch to multi-line mode
+                if not self.is_multiline_mode:
+                    self._switch_to_multiline_mode()
+
                 # Add new line to subtitle_lines
                 new_line = {
                     'text': text,
@@ -993,37 +1002,25 @@ class ControlGUI:
 
                 # Update multi-line display
                 self._update_multiline_subtitle()
-
-                # Hide single-line elements
-                self.speaker_label.place_forget()
-                self.subtitle_label.pack_forget()
-                if self.subtitle_shadow_label:
-                    self.subtitle_shadow_label.pack_forget()
             else:
-                # Single-line mode (original behavior)
-                # Clear multi-line labels if any
-                for lbl in self.multi_line_labels:
-                    try:
-                        lbl.destroy()
-                    except:
-                        pass
-                self.multi_line_labels = []
-
-                # Show single-line subtitle
-                self.subtitle_label.pack()
+                # Switch to single-line mode
+                if self.is_multiline_mode:
+                    self._switch_to_singleline_mode()
 
                 # Update speaker label
                 if speaker and self.config.show_speaker_colors and self.speaker_label:
                     self.speaker_label.config(text=speaker, fg=speaker_color or "#FFFFFF",
                                                bg=self.config.subtitle_bg_color)
-                    self.speaker_label.place(relx=0.5, rely=0.15, anchor="center")
+                    self.speaker_label.place(relx=0.5, rely=0.3, anchor="center")
                 elif self.speaker_label:
                     self.speaker_label.place_forget()
 
                 # Update main subtitle
                 self.subtitle_label.config(text=text or "...")
-                if self.subtitle_shadow_label:
+                if self.subtitle_shadow_label and self.config.text_shadow:
                     self.subtitle_shadow_label.config(text=text or "...")
+                    self.subtitle_shadow_label.place(relx=0.5, rely=0.5, anchor="center", x=2, y=2)
+                    self.subtitle_label.lift()
 
         except tk.TclError:
             return
@@ -1035,6 +1032,37 @@ class ControlGUI:
 
         self._update_background_size()
         self._resize_window_if_needed()
+
+    def _switch_to_multiline_mode(self):
+        """Switch from single-line to multi-line subtitle display"""
+        self.is_multiline_mode = True
+
+        # Hide single-line elements
+        self.subtitle_label.place_forget()
+        self.subtitle_shadow_label.place_forget()
+        self.speaker_label.place_forget()
+
+        # Show multi-line frame
+        self.subtitle_frame.place(relx=0.5, rely=0.5, anchor="center")
+
+    def _switch_to_singleline_mode(self):
+        """Switch from multi-line to single-line subtitle display"""
+        self.is_multiline_mode = False
+
+        # Clear multi-line labels
+        for lbl in self.multi_line_labels:
+            try:
+                lbl.destroy()
+            except:
+                pass
+        self.multi_line_labels = []
+        self.subtitle_lines = []
+
+        # Hide multi-line frame
+        self.subtitle_frame.place_forget()
+
+        # Show single-line subtitle
+        self.subtitle_label.place(relx=0.5, rely=0.5, anchor="center")
 
     def _update_multiline_subtitle(self):
         """Update the multi-line subtitle display"""
@@ -1049,11 +1077,6 @@ class ControlGUI:
                 pass
         self.multi_line_labels = []
 
-        # Hide single-line elements
-        self.subtitle_label.pack_forget()
-        if self.subtitle_shadow_label:
-            self.subtitle_shadow_label.pack_forget()
-
         font_size = self.config.font_size
         font_weight = self.config.font_weight
 
@@ -1064,16 +1087,16 @@ class ControlGUI:
 
             # Create frame for this line
             line_frame = tk.Frame(self.subtitle_frame, bg=self.config.subtitle_bg_color)
-            line_frame.pack(pady=2, fill='x')
+            line_frame.pack(pady=3, fill='x')
 
             # Speaker label
-            speaker_text = f"[{line_data['speaker']}] " if line_data['speaker'] else ""
+            speaker_text = f"[{line_data['speaker']}]" if line_data['speaker'] else ""
             if speaker_text:
                 speaker_lbl = tk.Label(line_frame, text=speaker_text,
-                                        font=("Helvetica", font_size - 2, "bold"),
+                                        font=("Helvetica", font_size - 4, "bold"),
                                         fg=line_data['color'],
                                         bg=self.config.subtitle_bg_color)
-                speaker_lbl.pack(side='left')
+                speaker_lbl.pack(side='left', padx=(0, 8))
                 self.multi_line_labels.append(speaker_lbl)
 
             # Text label - newer lines are brighter
@@ -1082,14 +1105,14 @@ class ControlGUI:
                 text_font = ("Helvetica", font_size, font_weight)
             else:
                 # Fade older lines slightly
-                text_color = "#AAAAAA"  # Dimmer color for older lines
-                text_font = ("Helvetica", font_size - 2, font_weight)
+                text_color = "#999999"  # Dimmer color for older lines
+                text_font = ("Helvetica", font_size - 4, "normal")
 
             text_lbl = tk.Label(line_frame, text=line_data['text'],
                                  font=text_font,
                                  fg=text_color,
                                  bg=self.config.subtitle_bg_color,
-                                 wraplength=800, justify="left")
+                                 wraplength=850, justify="left")
             text_lbl.pack(side='left', fill='x', expand=True)
 
             self.multi_line_labels.append(line_frame)
