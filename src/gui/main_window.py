@@ -1067,6 +1067,12 @@ class ControlGUI:
         # Show multi-line frame
         self.subtitle_frame.place(relx=0.5, rely=0.5, anchor="center")
 
+        # Resize window to accommodate multi-line content
+        if self.subtitle_window:
+            x, y = self.subtitle_window.winfo_x(), self.subtitle_window.winfo_y()
+            self.subtitle_window.geometry(f"1000x250+{x}+{y}")
+            self.background_canvas.configure(width=960, height=210)
+
     def _switch_to_singleline_mode(self):
         """Switch from multi-line to single-line subtitle display"""
         self.is_multiline_mode = False
@@ -1113,7 +1119,7 @@ class ControlGUI:
 
             # Create frame for this line
             line_frame = tk.Frame(self.subtitle_frame, bg=self.config.subtitle_bg_color)
-            line_frame.pack(pady=3, fill='x')
+            line_frame.pack(pady=5, fill='x', padx=10)
 
             # Speaker label
             speaker_text = f"[{line_data['speaker']}]" if line_data['speaker'] else ""
@@ -1122,7 +1128,7 @@ class ControlGUI:
                                         font=("Helvetica", font_size - 4, "bold"),
                                         fg=line_data['color'],
                                         bg=self.config.subtitle_bg_color)
-                speaker_lbl.pack(side='left', padx=(0, 8))
+                speaker_lbl.pack(side='left', padx=(0, 10))
                 self.multi_line_labels.append(speaker_lbl)
 
             # Text label - newer lines are brighter
@@ -1131,18 +1137,21 @@ class ControlGUI:
                 text_font = ("Helvetica", font_size, font_weight)
             else:
                 # Fade older lines slightly
-                text_color = "#999999"  # Dimmer color for older lines
-                text_font = ("Helvetica", font_size - 4, "normal")
+                text_color = "#AAAAAA"  # Dimmer color for older lines
+                text_font = ("Helvetica", font_size - 2, "normal")
 
             text_lbl = tk.Label(line_frame, text=line_data['text'],
                                  font=text_font,
                                  fg=text_color,
                                  bg=self.config.subtitle_bg_color,
-                                 wraplength=850, justify="left")
+                                 wraplength=800, justify="left")
             text_lbl.pack(side='left', fill='x', expand=True)
 
             self.multi_line_labels.append(line_frame)
             self.multi_line_labels.append(text_lbl)
+
+        # Force update and resize after adding content
+        self.subtitle_window.update_idletasks()
 
     def _update_background_size(self):
         if not self.subtitle_window or not self.background_canvas.winfo_exists():
@@ -1150,8 +1159,15 @@ class ControlGUI:
         try:
             self.subtitle_window.update_idletasks()
 
-            label_width = self.subtitle_label.winfo_reqwidth()
-            label_height = self.subtitle_label.winfo_reqheight()
+            # Get dimensions based on current mode
+            if self.is_multiline_mode and self.subtitle_frame.winfo_exists():
+                # Multi-line mode: use subtitle_frame dimensions
+                label_width = self.subtitle_frame.winfo_reqwidth()
+                label_height = self.subtitle_frame.winfo_reqheight()
+            else:
+                # Single-line mode: use subtitle_label dimensions
+                label_width = self.subtitle_label.winfo_reqwidth()
+                label_height = self.subtitle_label.winfo_reqheight()
 
             label_width = max(label_width, 200)
             label_height = max(label_height, 50)
@@ -1170,18 +1186,24 @@ class ControlGUI:
             self.background_canvas.coords(self.background_rect, max(0, x0), max(0, y0),
                                            min(canvas_width, x1), min(canvas_height, y1))
 
-            self.subtitle_label.place(relx=0.5, rely=0.55, anchor="center")
+            # Only reposition single-line label if not in multiline mode
+            if not self.is_multiline_mode:
+                self.subtitle_label.place(relx=0.5, rely=0.55, anchor="center")
 
-            if self.config.text_shadow and self.subtitle_shadow_label.winfo_exists():
-                self.subtitle_shadow_label.place(x=self.subtitle_label.winfo_x() + 2,
-                                                  y=self.subtitle_label.winfo_y() + 2)
+                if self.config.text_shadow and self.subtitle_shadow_label.winfo_exists():
+                    self.subtitle_shadow_label.place(x=self.subtitle_label.winfo_x() + 2,
+                                                      y=self.subtitle_label.winfo_y() + 2)
+                    self.background_canvas.tag_lower(self.background_rect)
+                    self.subtitle_shadow_label.lift()
+                    self.subtitle_label.lift()
+                    if self.speaker_label:
+                        self.speaker_label.lift()
+                elif self.subtitle_shadow_label.winfo_exists():
+                    self.subtitle_shadow_label.place_forget()
+            else:
+                # Multi-line mode: ensure frame is on top
                 self.background_canvas.tag_lower(self.background_rect)
-                self.subtitle_shadow_label.lift()
-                self.subtitle_label.lift()
-                if self.speaker_label:
-                    self.speaker_label.lift()
-            elif self.subtitle_shadow_label.winfo_exists():
-                self.subtitle_shadow_label.place_forget()
+                self.subtitle_frame.lift()
 
         except tk.TclError:
             pass
@@ -1190,11 +1212,21 @@ class ControlGUI:
         if not self.subtitle_window or not self.subtitle_label.winfo_exists():
             return
         try:
-            label_width = self.subtitle_label.winfo_reqwidth()
-            label_height = self.subtitle_label.winfo_reqheight()
+            # Get dimensions based on current mode
+            if self.is_multiline_mode and self.subtitle_frame.winfo_exists():
+                # Multi-line mode: use subtitle_frame dimensions
+                self.subtitle_window.update_idletasks()
+                label_width = self.subtitle_frame.winfo_reqwidth()
+                label_height = self.subtitle_frame.winfo_reqheight()
+                # Add extra height for multi-line display
+                required_height = max(200, label_height + 100)
+            else:
+                # Single-line mode: use subtitle_label dimensions
+                label_width = self.subtitle_label.winfo_reqwidth()
+                label_height = self.subtitle_label.winfo_reqheight()
+                required_height = max(150, label_height + 80)
 
-            required_width = max(800, label_width + 60)
-            required_height = max(150, label_height + 80)
+            required_width = max(800, label_width + 100)
 
             current_width = self.subtitle_window.winfo_width()
             current_height = self.subtitle_window.winfo_height()
