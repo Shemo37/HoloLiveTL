@@ -1041,7 +1041,7 @@ class ControlGUI:
                     self.subtitle_label.config(text=text)
                     if self.subtitle_shadow_label and self.config.text_shadow:
                         self.subtitle_shadow_label.config(text=text)
-                        self.subtitle_shadow_label.place(relx=0.5, rely=0.5, anchor="center", x=2, y=2)
+                        self.subtitle_shadow_label.place(relx=0.5, rely=0.55, anchor="center", x=2, y=2)
                         self.subtitle_label.lift()
 
         except tk.TclError:
@@ -1191,8 +1191,7 @@ class ControlGUI:
                 self.subtitle_label.place(relx=0.5, rely=0.55, anchor="center")
 
                 if self.config.text_shadow and self.subtitle_shadow_label.winfo_exists():
-                    self.subtitle_shadow_label.place(x=self.subtitle_label.winfo_x() + 2,
-                                                      y=self.subtitle_label.winfo_y() + 2)
+                    self.subtitle_shadow_label.place(relx=0.5, rely=0.55, anchor="center", x=2, y=2)
                     self.background_canvas.tag_lower(self.background_rect)
                     self.subtitle_shadow_label.lift()
                     self.subtitle_label.lift()
