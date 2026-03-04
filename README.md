@@ -24,7 +24,7 @@ HoloLiveTL captures audio from your system and translates Japanese speech into E
 
 - **Real-time translation** — Japanese to English subtitle overlay via kotoba-whisper-bilingual
 - **Dynamic chunking** — Speech-aware audio segmentation using VAD, only processes when speech is detected
-- **Speaker diarization** — Identifies and color-codes different speakers (requires HuggingFace token + pyannote)
+- **Speaker diarization** — Identifies and color-codes different speakers (requires HuggingFace token + pyannote) for using this need to have chunk longer than 10 sec for better result
 - **Hallucination filtering** — Filters out common model hallucinations and repetitive output automatically
 - **Customizable subtitles** — Font size, colors, transparency, text shadow, border, and more
 - **Translation history** — Scrollable history panel with per-speaker labels and timestamps
