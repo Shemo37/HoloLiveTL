@@ -655,15 +655,18 @@ class ControlGUI:
         engine_frame = tk.LabelFrame(translation_tab, text="Translation Engine", padx=10, pady=10)
         engine_frame.pack(pady=5, fill="x")
 
-        self.ENGINE_LABELS = {"whisper": "Whisper (local)", "deepl": "DeepL API"}
+        self.ENGINE_LABELS = {"whisper": "Whisper (local)",
+                              "fugumt": "FuguMT (local)",
+                              "deepl": "DeepL API"}
         current_engine = self.config.translation_engine if self.config.translation_engine in self.ENGINE_LABELS else "whisper"
         self.translation_engine_var = tk.StringVar(value=self.ENGINE_LABELS[current_engine])
         tk.OptionMenu(engine_frame, self.translation_engine_var,
                       *self.ENGINE_LABELS.values()).pack(anchor='w')
 
-        tk.Label(engine_frame, text="DeepL translates the Japanese transcript for more fluent English.\n"
-                                    "New accounts get a one-time 1M character credit (~50h of streams);\n"
-                                    "watch the console usage counter. Falls back to Whisper if unavailable.",
+        tk.Label(engine_frame, text="FuguMT and DeepL translate the Japanese transcript for more fluent\n"
+                                    "English. FuguMT: free, offline, downloads a small model on first use.\n"
+                                    "DeepL: best quality; new accounts get a one-time 1M character credit\n"
+                                    "(~50h of streams). Both fall back to Whisper if unavailable.",
                  font=("Helvetica", 9), fg="gray", justify="left").pack(anchor='w', pady=(5, 0))
 
         deepl_key_frame = tk.LabelFrame(translation_tab, text="DeepL API Key", padx=10, pady=10)

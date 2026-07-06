@@ -6,6 +6,7 @@ import requests
 
 from src.modules.translator import (
     DeepLTranslator,
+    FuguMTTranslator,
     TranslatorUnavailable,
     apply_glossary,
     create_translator,
@@ -111,6 +112,49 @@ def test_create_translator_requires_engine_and_key():
     translator = create_translator(SimpleNamespace(translation_engine="deepl",
                                                    deepl_api_key="key:fx"))
     assert isinstance(translator, DeepLTranslator)
+
+
+def make_fugumt(pipe):
+    translator = FuguMTTranslator(SimpleNamespace(model_cache_dir="/tmp"))
+    translator.pipe = pipe
+    return translator
+
+
+def test_fugumt_translate_success():
+    pipe = MagicMock(return_value=[{"translation_text": "The cat is cute."}])
+    translator = make_fugumt(pipe)
+    assert translator.translate("猫はかわいいです。") == "The cat is cute."
+    pipe.assert_called_once_with("猫はかわいいです。")
+
+
+def test_fugumt_context_ignored():
+    pipe = MagicMock(return_value=[{"translation_text": "Hello"}])
+    translator = make_fugumt(pipe)
+    assert translator.translate("こんにちは", context="前の行") == "Hello"
+    pipe.assert_called_once_with("こんにちは")  # context not forwarded
+
+
+def test_fugumt_transient_failure_then_unavailable():
+    translator = make_fugumt(MagicMock(side_effect=RuntimeError("boom")))
+    assert translator.translate("テスト") is None  # first failure: skip chunk
+    with pytest.raises(TranslatorUnavailable):
+        for _ in range(MAX_CONSECUTIVE_FAILURES):
+            translator.translate("テスト")
+
+
+def test_create_translator_fugumt(monkeypatch):
+    monkeypatch.setattr(FuguMTTranslator, "load", lambda self: None)
+    translator = create_translator(SimpleNamespace(translation_engine="fugumt",
+                                                   model_cache_dir="/tmp"))
+    assert isinstance(translator, FuguMTTranslator)
+
+
+def test_create_translator_fugumt_load_failure_falls_back(monkeypatch):
+    def boom(self):
+        raise ImportError("no transformers")
+    monkeypatch.setattr(FuguMTTranslator, "load", boom)
+    assert create_translator(SimpleNamespace(translation_engine="fugumt",
+                                             model_cache_dir="/tmp")) is None
 
 
 def test_resolve_pipeline():

@@ -1,11 +1,18 @@
 """
 Text translation stage (optional).
 
-When a DeepL API key is configured, the processor transcribes Japanese and
-translates the text here instead of using Whisper's built-in translate task —
-a dedicated MT engine reads far better for JA->EN, and previous lines can be
-passed as (un-billed) context for coherence across subtitle chunks.
+With an engine configured, the processor transcribes Japanese and translates
+the text here instead of using Whisper's built-in translate task — a dedicated
+MT engine reads far better for JA->EN.
+
+Engines:
+- DeepL (API key required): highest quality; previous lines are passed as
+  (un-billed) context for coherence across subtitle chunks.
+- FuguMT (local): free forever, offline, no account; a small JA->EN
+  MarianMT model (staka/fugumt-ja-en) run on CPU so it never competes with
+  Whisper for VRAM.
 """
+import os
 import re
 import logging
 
@@ -15,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 DEEPL_FREE_ENDPOINT = "https://api-free.deepl.com/v2/translate"
 DEEPL_PRO_ENDPOINT = "https://api.deepl.com/v2/translate"
+
+FUGUMT_MODEL_ID = "staka/fugumt-ja-en"
 
 # Give up on DeepL for the rest of the session after this many consecutive
 # transient failures; the processor then falls back to Whisper translation.
@@ -95,6 +104,50 @@ class DeepLTranslator:
         return None
 
 
+class FuguMTTranslator:
+    """Local JA->EN translation via the FuguMT MarianMT model.
+
+    Runs on CPU deliberately: the model is small enough that CPU inference is
+    fast (tens of ms per subtitle) and it avoids competing with Whisper and
+    pyannote for VRAM.
+    """
+
+    name = "fugumt"
+
+    def __init__(self, config):
+        self.cache_dir = os.path.join(
+            getattr(config, "model_cache_dir", os.path.expanduser("~/.cache")), "fugumt")
+        self.pipe = None
+        self.consecutive_failures = 0
+
+    def load(self):
+        from transformers import MarianMTModel, MarianTokenizer, pipeline
+
+        print(f"Loading FuguMT translation model '{FUGUMT_MODEL_ID}' (CPU)...")
+        os.makedirs(self.cache_dir, exist_ok=True)
+        tokenizer = MarianTokenizer.from_pretrained(FUGUMT_MODEL_ID, cache_dir=self.cache_dir)
+        model = MarianMTModel.from_pretrained(FUGUMT_MODEL_ID, cache_dir=self.cache_dir)
+        self.pipe = pipeline("translation", model=model, tokenizer=tokenizer, device=-1)
+        print("FuguMT model loaded.")
+
+    def translate(self, text, context=None):
+        """Translate Japanese text to English. `context` is accepted for
+        interface parity with DeepL but MarianMT cannot use it."""
+        try:
+            translation = self.pipe(text)[0]["translation_text"]
+        except Exception as e:
+            self.consecutive_failures += 1
+            print(f"FuguMT translation failed ({e}) "
+                  f"[{self.consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}]")
+            if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                raise TranslatorUnavailable(
+                    f"{MAX_CONSECUTIVE_FAILURES} consecutive FuguMT failures, last: {e}")
+            return None
+
+        self.consecutive_failures = 0
+        return translation
+
+
 def apply_glossary(text, glossary):
     """Case-insensitive whole-word replacement on the English output. Fixes
     recurring mistranslations of names/terms (e.g. "White God" -> "Fubuki")."""
@@ -109,16 +162,26 @@ def create_translator(config):
     """Return a translator instance per config, or None to use Whisper's
     built-in translation."""
     engine = getattr(config, "translation_engine", "whisper")
-    if engine != "deepl":
-        return None
 
-    api_key = getattr(config, "deepl_api_key", None)
-    if not api_key:
-        print("translation_engine is 'deepl' but no deepl_api_key configured; "
-              "using Whisper translation. Get an API key at "
-              "https://www.deepl.com/pro-api (new accounts: one-time 1M character credit)")
-        return None
+    if engine == "deepl":
+        api_key = getattr(config, "deepl_api_key", None)
+        if not api_key:
+            print("translation_engine is 'deepl' but no deepl_api_key configured; "
+                  "using Whisper translation. Get an API key at "
+                  "https://www.deepl.com/pro-api (new accounts: one-time 1M character credit)")
+            return None
+        translator = DeepLTranslator(api_key)
+        print(f"Translation engine: DeepL ({'free' if api_key.endswith(':fx') else 'pro'} tier)")
+        return translator
 
-    translator = DeepLTranslator(api_key)
-    print(f"Translation engine: DeepL ({'free' if api_key.endswith(':fx') else 'pro'} tier)")
-    return translator
+    if engine == "fugumt":
+        translator = FuguMTTranslator(config)
+        try:
+            translator.load()
+        except Exception as e:
+            print(f"FuguMT unavailable ({e}); using Whisper translation.")
+            return None
+        print("Translation engine: FuguMT (local, CPU)")
+        return translator
+
+    return None
