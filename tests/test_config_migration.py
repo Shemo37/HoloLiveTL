@@ -60,8 +60,18 @@ def test_validate_new_keys(tmp_path, monkeypatch):
         "asr_backend": "bogus",
         "asr_beam_size": 99,
         "min_confidence": 7.5,
+        "translation_engine": "google",
     })
     assert config.validate() is False
     assert config.asr_backend == "faster-whisper"
     assert config.asr_beam_size == 5
     assert config.min_confidence == 0.30
+    assert config.translation_engine == "whisper"
+
+
+def test_translation_defaults(tmp_path, monkeypatch):
+    config = make_config(tmp_path, monkeypatch)
+    assert config.translation_engine == "whisper"
+    assert config.deepl_api_key is None
+    assert config.asr_hotwords == ""
+    assert config.glossary == {}

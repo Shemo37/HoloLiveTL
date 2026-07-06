@@ -648,6 +648,50 @@ class ControlGUI:
             lbl = tk.Label(color_frame, text=f" {i+1} ", bg=color, fg="white", font=("Helvetica", 9, "bold"))
             lbl.pack(side="left", padx=2)
 
+        # Tab: Translation
+        translation_tab = tk.Frame(settings_notebook, padx=10, pady=10)
+        settings_notebook.add(translation_tab, text="Translation")
+
+        engine_frame = tk.LabelFrame(translation_tab, text="Translation Engine", padx=10, pady=10)
+        engine_frame.pack(pady=5, fill="x")
+
+        self.ENGINE_LABELS = {"whisper": "Whisper (local)", "deepl": "DeepL API"}
+        current_engine = self.config.translation_engine if self.config.translation_engine in self.ENGINE_LABELS else "whisper"
+        self.translation_engine_var = tk.StringVar(value=self.ENGINE_LABELS[current_engine])
+        tk.OptionMenu(engine_frame, self.translation_engine_var,
+                      *self.ENGINE_LABELS.values()).pack(anchor='w')
+
+        tk.Label(engine_frame, text="DeepL translates the Japanese transcript for more fluent English.\n"
+                                    "Free tier: 500,000 characters/month. Falls back to Whisper if unavailable.",
+                 font=("Helvetica", 9), fg="gray", justify="left").pack(anchor='w', pady=(5, 0))
+
+        deepl_key_frame = tk.LabelFrame(translation_tab, text="DeepL API Key", padx=10, pady=10)
+        deepl_key_frame.pack(pady=5, fill="x")
+
+        deepl_key_row = tk.Frame(deepl_key_frame)
+        deepl_key_row.pack(fill='x', pady=5)
+
+        self.deepl_key_var = tk.StringVar(value=self.config.deepl_api_key or "")
+        self.deepl_key_entry = tk.Entry(deepl_key_row, textvariable=self.deepl_key_var, width=40, show="*")
+        self.deepl_key_entry.pack(side="left", padx=5, expand=True, fill='x')
+
+        self.show_deepl_key_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(deepl_key_row, text="Show", variable=self.show_deepl_key_var,
+                       command=self._toggle_deepl_key_visibility).pack(side="left", padx=5)
+
+        tk.Label(deepl_key_frame, text="Get a free key at: https://www.deepl.com/pro-api",
+                 font=("Helvetica", 8), fg="blue").pack(anchor='w')
+
+        hotwords_frame = tk.LabelFrame(translation_tab, text="Hotwords (per-streamer vocabulary)", padx=10, pady=10)
+        hotwords_frame.pack(pady=5, fill="x")
+
+        tk.Label(hotwords_frame, text="Names and terms to recognize correctly, comma-separated.\n"
+                                      "Example: Shirakami Fubuki, sukonbu, Kurokami",
+                 font=("Helvetica", 9), fg="gray", justify="left").pack(anchor='w')
+
+        self.hotwords_var = tk.StringVar(value=self.config.asr_hotwords or "")
+        tk.Entry(hotwords_frame, textvariable=self.hotwords_var, width=50).pack(fill='x', pady=5)
+
         # Tab 3: Appearance
         appearance_tab = tk.Frame(settings_notebook, padx=10, pady=10)
         settings_notebook.add(appearance_tab, text="Appearance")
@@ -741,6 +785,12 @@ class ControlGUI:
             self.hf_token_entry.config(show="")
         else:
             self.hf_token_entry.config(show="*")
+
+    def _toggle_deepl_key_visibility(self):
+        if self.show_deepl_key_var.get():
+            self.deepl_key_entry.config(show="")
+        else:
+            self.deepl_key_entry.config(show="*")
 
     def on_subtitle_position_change(self, position):
         if not self.subtitle_window or not self.subtitle_window.winfo_exists():
@@ -1390,6 +1440,15 @@ class ControlGUI:
             hf_token = self.hf_token_var.get().strip()
             if hf_token:
                 self.config.hf_token = hf_token
+
+            # Translation settings
+            engine_label = self.translation_engine_var.get()
+            self.config.translation_engine = next(
+                (key for key, label in self.ENGINE_LABELS.items() if label == engine_label),
+                "whisper")
+            deepl_key = self.deepl_key_var.get().strip()
+            self.config.deepl_api_key = deepl_key or None
+            self.config.asr_hotwords = self.hotwords_var.get().strip()
 
             if save_to_disk:
                 self.config.save_config()

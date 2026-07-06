@@ -159,6 +159,8 @@ class FasterWhisperBackend:
             repetition_penalty=1.1,
             vad_filter=use_internal_vad,
             vad_parameters={"min_silence_duration_ms": 500} if use_internal_vad else None,
+            # Bias decoding toward per-streamer vocabulary (names, game terms)
+            hotwords=getattr(self.config, "asr_hotwords", "") or None,
         )
 
         segments = [
