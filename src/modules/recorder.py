@@ -3,9 +3,25 @@ import os
 import numpy as np
 import torch
 import traceback
-from queue import Queue
+from queue import Queue, Full, Empty
 from .audio_utils import find_audio_device
 from .config import SAMPLE_RATE
+
+def _enqueue_chunk(audio_queue, chunk):
+    """Queue a chunk, dropping the oldest one on overflow so subtitle
+    staleness stays bounded when processing can't keep up."""
+    try:
+        audio_queue.put_nowait(chunk)
+    except Full:
+        try:
+            audio_queue.get_nowait()
+            print("⚠️ Audio queue full - dropped oldest chunk to keep subtitles current")
+        except Empty:
+            pass
+        try:
+            audio_queue.put_nowait(chunk)
+        except Full:
+            pass
 
 def recorder_thread(stop_event, audio_queue, config, gui_queue, selected_device_name=None):
     if config.use_dynamic_chunking:
@@ -24,7 +40,7 @@ def fixed_recorder_thread(stop_event, audio_queue, config, gui_queue, selected_d
             while not stop_event.is_set():
                 data = mic.record(numframes=int(SAMPLE_RATE * config.chunk_duration))
                 if not stop_event.is_set():
-                    audio_queue.put(data)
+                    _enqueue_chunk(audio_queue, data)
     except Exception as e:
         print(f"🔴 Recorder Thread Error (Fixed): {e}")
         traceback.print_exc()
@@ -128,7 +144,7 @@ def dynamic_recorder_thread(stop_event, audio_queue, config, gui_queue, selected
                         if chunk_duration_s > min_duration and len(audio_chunk) >= min_samples:
                             chunk_type = "LOUD" if is_loud_chunk else "speech"
                             print(f"🎤 Detected {chunk_type} chunk of {chunk_duration_s:.2f}s (peak: {chunk_peak:.3f}). Sending for processing.")
-                            audio_queue.put(audio_chunk)
+                            _enqueue_chunk(audio_queue, audio_chunk)
                         else:
                             print(f"⏩ Skipped short chunk: {chunk_duration_s:.2f}s (peak: {chunk_peak:.3f})")
                         

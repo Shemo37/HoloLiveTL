@@ -373,6 +373,7 @@ class ControlGUI:
         self.background_canvas = None
         self.background_rect = None
         self.last_subtitle = ""
+        self.last_subtitle_id = None
         self.last_speaker = None
         self.last_speaker_color = None
         self.subtitle_history = []
@@ -869,9 +870,13 @@ class ControlGUI:
                 msg_type, data = self.gui_queue.get_nowait()
                 if msg_type == "subtitle":
                     self.update_subtitle_text(data)
+                elif msg_type == "speaker_update":
+                    self.update_speaker_label(data)
                 elif msg_type == "model_loaded":
                     self.status_label.config(text="Status: Running", fg="green")
                     self.stop_button.config(state="normal")
+                elif msg_type == "status":
+                    self.status_label.config(text=f"Status: {data}", fg="orange")
                 elif msg_type == "diarization_status":
                     if data:
                         self.diarization_status_label.config(text="Speaker Diarization: ENABLED", fg="green")
@@ -989,14 +994,15 @@ class ControlGUI:
             return
 
         self.last_subtitle = text
+        self.last_subtitle_id = data.get('id') if isinstance(data, dict) else None
         self.last_speaker = speaker
         self.last_speaker_color = speaker_color
 
         try:
-            # Check if we have speaker diarization enabled and should show multi-line
+            # Multi-line mode whenever diarization is on; speaker labels are
+            # attached asynchronously later via "speaker_update" messages.
             use_multiline = (self.diarization_enabled and
-                           self.config.use_speaker_diarization and
-                           speaker is not None)
+                           self.config.use_speaker_diarization)
 
             if use_multiline:
                 # Switch to multi-line mode
@@ -1005,6 +1011,7 @@ class ControlGUI:
 
                 # Add new line to subtitle_lines
                 new_line = {
+                    'id': self.last_subtitle_id,
                     'text': text,
                     'speaker': speaker,
                     'color': speaker_color or self.config.subtitle_font_color
@@ -1054,6 +1061,38 @@ class ControlGUI:
 
         self._update_background_size()
         self._resize_window_if_needed()
+
+    def update_speaker_label(self, data):
+        """Attach a speaker label from the async diarization worker to an
+        already-displayed subtitle, matched by subtitle id. Silently ignores
+        subtitles that have already scrolled away."""
+        subtitle_id = data.get('id')
+        speaker = data.get('speaker')
+        speaker_color = data.get('speaker_color')
+        if subtitle_id is None or not speaker:
+            return
+
+        try:
+            if self.is_multiline_mode:
+                updated = False
+                for line in self.subtitle_lines:
+                    if line.get('id') == subtitle_id:
+                        line['speaker'] = speaker
+                        line['color'] = speaker_color or self.config.subtitle_font_color
+                        updated = True
+                if updated:
+                    self._update_multiline_subtitle()
+                    self._update_background_size()
+            elif subtitle_id == self.last_subtitle_id:
+                self.last_speaker = speaker
+                self.last_speaker_color = speaker_color
+                if (self.config.show_speaker_colors and self.speaker_label
+                        and self.subtitle_visible):
+                    self.speaker_label.config(text=speaker, fg=speaker_color or "#FFFFFF",
+                                              bg=self.config.subtitle_bg_color)
+                    self.speaker_label.place(relx=0.5, rely=0.3, anchor="center")
+        except tk.TclError:
+            pass
 
     def _switch_to_multiline_mode(self):
         """Switch from single-line to multi-line subtitle display"""
@@ -1376,7 +1415,10 @@ class ControlGUI:
 
         self.create_subtitle_window()
         self.stop_event = threading.Event()
-        audio_queue = Queue(maxsize=20)
+        # Small queue keeps subtitles from lagging far behind live audio when
+        # processing can't keep up; the recorder drops the oldest chunk on
+        # overflow rather than blocking.
+        audio_queue = Queue(maxsize=8)
 
         selected_device_name = self.get_selected_device_name()
         if selected_device_name is None:

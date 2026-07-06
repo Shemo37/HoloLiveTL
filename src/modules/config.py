@@ -6,6 +6,8 @@ import os
 
 # Constants
 MODEL_ID = "kotoba-tech/kotoba-whisper-bilingual-v1.0"
+FASTER_MODEL_ID = "kotoba-tech/kotoba-whisper-bilingual-v1.0-faster"
+CONFIG_VERSION = 2
 SAMPLE_RATE = 16000
 CHUNK_DURATION = 5
 LANGUAGE_CODE = "en"
@@ -58,9 +60,15 @@ class Config:
 
             # Dynamic chunking
             "use_dynamic_chunking": True,
-            "dynamic_max_chunk_duration": 15.0,
-            "dynamic_silence_timeout": 1.2,
+            "dynamic_max_chunk_duration": 8.0,
+            "dynamic_silence_timeout": 0.9,
             "dynamic_min_speech_duration": 0.3,
+
+            # ASR backend settings
+            "asr_backend": "faster-whisper",  # "faster-whisper" or "transformers"
+            "asr_beam_size": 5,
+            "min_confidence": 0.30,
+            "config_version": CONFIG_VERSION,
 
             # Appearance settings
             "window_opacity": DEFAULT_WINDOW_OPACITY,
@@ -93,10 +101,28 @@ class Config:
                 with open(self.config_file, 'r') as f:
                     loaded_config = json.load(f)
                     default_config.update(loaded_config)
+                    self._migrate_config(default_config, loaded_config)
             except Exception as e:
                 print(f"Error loading config: {e}")
 
         self.__dict__.update(default_config)
+
+    @staticmethod
+    def _migrate_config(config, loaded_config):
+        """Migrate pre-versioned configs in place. Only values still equal to
+        an old default are bumped to the new default; user-tuned values are
+        left untouched."""
+        if loaded_config.get("config_version"):
+            return
+        old_defaults_to_new = {
+            "dynamic_max_chunk_duration": (15.0, 8.0),
+            "dynamic_silence_timeout": (1.2, 0.9),
+        }
+        for key, (old_default, new_default) in old_defaults_to_new.items():
+            if config.get(key) == old_default:
+                print(f"Config migration: {key} {old_default} -> {new_default}")
+                config[key] = new_default
+        config["config_version"] = CONFIG_VERSION
 
     def save_config(self):
         """Save current configuration to file"""
@@ -132,6 +158,21 @@ class Config:
         if not (0.0 <= self.window_opacity <= 1.0):
             print(f"Warning: window_opacity {self.window_opacity} out of range, resetting to default")
             self.window_opacity = DEFAULT_WINDOW_OPACITY
+            valid = False
+
+        if self.asr_backend not in ("faster-whisper", "transformers"):
+            print(f"Warning: asr_backend '{self.asr_backend}' invalid, resetting to 'faster-whisper'")
+            self.asr_backend = "faster-whisper"
+            valid = False
+
+        if not (1 <= self.asr_beam_size <= 10):
+            print(f"Warning: asr_beam_size {self.asr_beam_size} out of range, resetting to 5")
+            self.asr_beam_size = 5
+            valid = False
+
+        if not (0.0 <= self.min_confidence <= 1.0):
+            print(f"Warning: min_confidence {self.min_confidence} out of range, resetting to 0.30")
+            self.min_confidence = 0.30
             valid = False
 
         if not (8 <= self.font_size <= 72):
