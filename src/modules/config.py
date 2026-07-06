@@ -83,6 +83,10 @@ class Config:
 
             # Translation settings
             "output_mode": "translate",
+            "translation_engine": "whisper",  # "whisper" (built-in) or "deepl"
+            "deepl_api_key": None,
+            "asr_hotwords": "",  # per-streamer names/terms to bias recognition
+            "glossary": {},      # English output replacements, e.g. {"White God": "Fubuki"}
 
             # Speaker diarization settings
             "use_speaker_diarization": DEFAULT_USE_DIARIZATION,
@@ -158,6 +162,11 @@ class Config:
         if not (0.0 <= self.window_opacity <= 1.0):
             print(f"Warning: window_opacity {self.window_opacity} out of range, resetting to default")
             self.window_opacity = DEFAULT_WINDOW_OPACITY
+            valid = False
+
+        if self.translation_engine not in ("whisper", "deepl"):
+            print(f"Warning: translation_engine '{self.translation_engine}' invalid, resetting to 'whisper'")
+            self.translation_engine = "whisper"
             valid = False
 
         if self.asr_backend not in ("faster-whisper", "transformers"):

@@ -9,12 +9,27 @@ import string
 import traceback
 import logging
 from queue import Queue, Full, Empty
+from collections import deque
 from .audio_utils import enhance_audio_quality
 from .asr_backend import create_backend, confidence_from_segments
+from .translator import create_translator, apply_glossary, TranslatorUnavailable
 from .filters import post_process_translation, is_hallucination
 from .config import SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_pipeline(config, translator):
+    """Decide the ASR task/target and whether a text translator runs after it.
+
+    With a text translator active, ASR transcribes Japanese and the translator
+    produces the English; otherwise Whisper's built-in translate task is used.
+    """
+    if config.output_mode == "translate":
+        if translator is not None:
+            return "transcribe", "ja", True
+        return "translate", "en", False
+    return "transcribe", config.language_code, False
 
 
 def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
@@ -45,15 +60,18 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
 
         backend = create_backend(config, device, gui_queue)
 
-        task = "translate" if config.output_mode == "translate" else "transcribe"
-        target_lang = "en" if task == "translate" else config.language_code
-        print(f"ASR backend: {backend.name}, task: '{task}', target language: '{target_lang}'")
+        text_translator = create_translator(config)
+        task, target_lang, use_text_translator = resolve_pipeline(config, text_translator)
+        print(f"ASR backend: {backend.name}, task: '{task}', target language: '{target_lang}'"
+              + (", translation: DeepL" if use_text_translator else ""))
 
         gui_queue.put(("model_loaded", None))
 
         translator = str.maketrans('', '', string.punctuation)
         translation_history = []
         min_confidence = getattr(config, 'min_confidence', 0.30)
+        glossary = getattr(config, 'glossary', {}) or {}
+        source_context = deque(maxlen=2)  # recent JA lines, sent to DeepL as context
         subtitle_id = 0
 
         while not stop_event.is_set():
@@ -98,11 +116,37 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                         stats.add_chunk(time.time() - start_time, had_translation, True, confidence_score)
                         continue
 
+                    if use_text_translator:
+                        source_text = processed_text
+                        try:
+                            translated = text_translator.translate(
+                                source_text, context=" ".join(source_context) or None)
+                        except TranslatorUnavailable as e:
+                            # Abandon DeepL for this session; later chunks go
+                            # back through Whisper's built-in translation.
+                            print(f"Disabling DeepL: {e}")
+                            gui_queue.put(("status", "DeepL unavailable - using Whisper translation"))
+                            text_translator = None
+                            task, target_lang, use_text_translator = resolve_pipeline(config, None)
+                            translated = None
+
+                        if use_text_translator:
+                            if translated is None:
+                                stats.add_chunk(time.time() - start_time, had_translation, True, confidence_score)
+                                continue
+                            source_context.append(source_text)
+                            processed_text = translated.strip()
+                        else:
+                            # This chunk was transcribed JA with no translation
+                            # available; skip it rather than showing raw JA.
+                            stats.add_chunk(time.time() - start_time, had_translation, True, confidence_score)
+                            continue
+
                     is_hallucination_result = is_hallucination(processed_text, translator, translation_history)
                     was_hallucination = is_hallucination_result
 
                     if not is_hallucination_result:
-                        processed_text = post_process_translation(processed_text)
+                        processed_text = apply_glossary(post_process_translation(processed_text), glossary)
                         translation_history.append(processed_text)
                         if len(translation_history) > 10:
                             translation_history.pop(0)
