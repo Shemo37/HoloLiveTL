@@ -83,7 +83,7 @@ class Config:
 
             # Translation settings
             "output_mode": "translate",
-            "translation_engine": "whisper",  # "whisper" (built-in) or "deepl"
+            "translation_engine": "whisper",  # "whisper" (built-in), "deepl", or "fugumt"
             "deepl_api_key": None,
             "asr_hotwords": "",  # per-streamer names/terms to bias recognition
             "glossary": {},      # English output replacements, e.g. {"White God": "Fubuki"}
@@ -164,7 +164,7 @@ class Config:
             self.window_opacity = DEFAULT_WINDOW_OPACITY
             valid = False
 
-        if self.translation_engine not in ("whisper", "deepl"):
+        if self.translation_engine not in ("whisper", "deepl", "fugumt"):
             print(f"Warning: translation_engine '{self.translation_engine}' invalid, resetting to 'whisper'")
             self.translation_engine = "whisper"
             valid = False

@@ -16,5 +16,9 @@ ctranslate2>=4.5.0
 # Windows wheels bundle these in torch/lib; otherwise install:
 #   pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 
+# FuguMT local translation engine (MarianMT tokenizer needs sentencepiece)
+sentencepiece>=0.1.99
+sacremoses>=0.0.53
+
 # Speaker Diarization (optional - only needed if using speaker separation)
 pyannote.audio>=3.1.0
