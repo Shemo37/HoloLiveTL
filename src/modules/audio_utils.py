@@ -43,25 +43,25 @@ def highpass_filter(data, cutoff=100, fs=16000, order=5):
 def normalize_audio(audio_data):
     """Normalize audio to improve recognition accuracy while preserving loud sounds"""
     audio_data = audio_data - np.mean(audio_data)
-    
+
     rms = np.sqrt(np.mean(audio_data ** 2))
-    if rms > 0:
-        target_rms = 0.3
-        audio_data = audio_data * (target_rms / rms)
-    
-    audio_data = np.where(np.abs(audio_data) > 0.95, 
-                         np.sign(audio_data) * (0.95 + 0.05 * np.tanh((np.abs(audio_data) - 0.95) * 10)), 
-                         audio_data)
-    
+    # Near-silence: amplifying only raises the noise floor and feeds
+    # hallucination-prone garbage to the ASR model, so leave it alone.
+    if rms < 0.001:
+        return audio_data
+
+    target_rms = 0.3
+    if rms < target_rms:
+        gain = min(target_rms / rms, 5.0)
+        audio_data = audio_data * gain
+
+    peak = np.max(np.abs(audio_data))
+    if peak > 0.95:
+        audio_data = audio_data * (0.95 / peak)
+
     return audio_data
 
 def enhance_audio_quality(audio_data, sample_rate=16000):
     """Apply audio enhancements for better speech recognition including loud sounds"""
     audio_data = highpass_filter(audio_data, cutoff=60, fs=sample_rate, order=3)
-    audio_data = normalize_audio(audio_data)
-    
-    threshold = 0.005
-    audio_data = np.where(np.abs(audio_data) < threshold, 
-                         audio_data * 0.3, audio_data)
-    
-    return audio_data
+    return normalize_audio(audio_data)

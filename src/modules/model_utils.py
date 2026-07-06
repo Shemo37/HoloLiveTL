@@ -162,6 +162,8 @@ def get_kotoba_pipeline_kwargs():
 
 def optimize_for_vtuber_content(generate_kwargs):
     """Apply VTuber-specific optimizations to generate_kwargs"""
-    generate_kwargs["temperature"] = 0.1
-    generate_kwargs["no_repeat_ngram_size"] = 1
+    # Greedy decoding for deterministic output. no_repeat_ngram_size stays at
+    # the base value of 3: forcing it to 1 forbade ANY token from repeating,
+    # which mangled legitimate output like "no no no" or repeated particles.
+    generate_kwargs["temperature"] = 0.0
     return generate_kwargs
