@@ -662,7 +662,8 @@ class ControlGUI:
                       *self.ENGINE_LABELS.values()).pack(anchor='w')
 
         tk.Label(engine_frame, text="DeepL translates the Japanese transcript for more fluent English.\n"
-                                    "Free tier: 500,000 characters/month. Falls back to Whisper if unavailable.",
+                                    "New accounts get a one-time 1M character credit (~50h of streams);\n"
+                                    "watch the console usage counter. Falls back to Whisper if unavailable.",
                  font=("Helvetica", 9), fg="gray", justify="left").pack(anchor='w', pady=(5, 0))
 
         deepl_key_frame = tk.LabelFrame(translation_tab, text="DeepL API Key", padx=10, pady=10)

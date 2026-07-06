@@ -77,8 +77,12 @@ class DeepLTranslator:
             return self._transient_failure(f"unexpected response: {e}")
 
         self.consecutive_failures = 0
+        # The credit is a finite one-time budget on new DeepL accounts, so
+        # surface usage in the console at regular milestones.
+        prev_chars = self.chars_sent
         self.chars_sent += len(text)
-        logger.debug(f"DeepL usage this session: {self.chars_sent} characters")
+        if self.chars_sent // 10000 > prev_chars // 10000:
+            print(f"DeepL usage this session: {self.chars_sent:,} characters")
         return translation
 
     def _transient_failure(self, reason):
@@ -111,8 +115,8 @@ def create_translator(config):
     api_key = getattr(config, "deepl_api_key", None)
     if not api_key:
         print("translation_engine is 'deepl' but no deepl_api_key configured; "
-              "using Whisper translation. Get a free key at "
-              "https://www.deepl.com/pro-api")
+              "using Whisper translation. Get an API key at "
+              "https://www.deepl.com/pro-api (new accounts: one-time 1M character credit)")
         return None
 
     translator = DeepLTranslator(api_key)
