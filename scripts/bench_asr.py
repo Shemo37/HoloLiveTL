@@ -90,13 +90,17 @@ def reset_vram():
 
 
 def make_backend(kind, config, device, model_dir):
-    if kind == 'faster_whisper':
-        return asr_backend.FasterWhisperBackend(config, task='translate', language='en', device=device)
-    return asr_backend.TransformersBackend(model_dir, task='translate', language='en', device=device)
+    if kind == 'faster-whisper':
+        backend = asr_backend.FasterWhisperBackend(config, task='translate', language='en', device=device)
+    else:
+        backend = asr_backend.TransformersBackend(config, model_dir=model_dir,
+                                                  task='translate', language='en', device=device)
+    backend.load()
+    return backend
 
 
 def bench_backend(kind, config, device, model_dir, clips, repeat):
-    label = kind + (f" ({config.compute_type})" if kind == 'faster_whisper' else "")
+    label = kind + (f" ({config.compute_type})" if kind == 'faster-whisper' else "")
     print(f"\n=== {label} ===")
     reset_vram()
 
@@ -150,6 +154,7 @@ def check_mapping(config, device, clips):
         try:
             backend = asr_backend.FasterWhisperBackend(
                 config, task=task, language=language, device=device)
+            backend.load()
             result = backend.transcribe(audio)
             print(f"  language={language!r} task={task!r} -> {result.text!r}")
             backend.close()
@@ -162,8 +167,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--wav', required=True, help='WAV file or directory of WAV files (16 kHz mono preferred)')
     ap.add_argument('--repeat', type=int, default=3, help='decodes per clip (default 3)')
-    ap.add_argument('--backends', default='transformers,faster_whisper',
-                    help='comma list: transformers,faster_whisper')
+    ap.add_argument('--backends', default='transformers,faster-whisper',
+                    help='comma list: transformers,faster-whisper')
     ap.add_argument('--compute-types', default='float16,int8_float16',
                     help='faster-whisper precisions to bench on GPU (ignored on CPU)')
     ap.add_argument('--check-mapping', action='store_true',
@@ -183,7 +188,7 @@ def main():
     model_dir, _ = ensure_model_downloaded(MODEL_ID, config.model_cache_dir)
 
     for kind in [b.strip() for b in args.backends.split(',') if b.strip()]:
-        if kind == 'faster_whisper' and device.startswith('cuda'):
+        if kind == 'faster-whisper' and device.startswith('cuda'):
             for ct in [c.strip() for c in args.compute_types.split(',') if c.strip()]:
                 config.compute_type = ct
                 bench_backend(kind, config, device, model_dir, clips, args.repeat)

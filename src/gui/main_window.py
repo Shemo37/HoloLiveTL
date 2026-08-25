@@ -23,6 +23,8 @@ from modules.recorder import recorder_thread
 from modules.processor import processor_thread
 from modules.model_utils import ensure_model_downloaded
 from modules.config import MODEL_ID
+from gui import theme
+from gui.theme import Tooltip, labeled_scale
 
 # Setup logging
 logging.basicConfig(
@@ -360,9 +362,11 @@ class ControlGUI:
         self.gui_queue = gui_queue
 
         self.root.title("Live Audio Translator")
-        self.root.geometry("680x950")
+        theme.setup_theme(self.root)
+        self.root.configure(bg=theme.BG)
+        self.root.geometry("700x860")
         self.root.resizable(True, True)
-        self.root.minsize(650, 750)
+        self.root.minsize(660, 700)
 
         self.worker_threads = []
         self.stop_event = None
@@ -409,6 +413,9 @@ class ControlGUI:
         self.root.bind('<F6>', lambda e: self.stop_translator())
         self.root.bind('<Control-h>', lambda e: self.history_panel.show())
         self.root.bind('<Control-l>', lambda e: self.open_log_window())
+        self.root.bind('<Control-equal>', lambda e: self.adjust_font_size(+2))
+        self.root.bind('<Control-plus>', lambda e: self.adjust_font_size(+2))
+        self.root.bind('<Control-minus>', lambda e: self.adjust_font_size(-2))
 
     def _patch_stdout(self):
         self.log_file = open("translator_app.log", "a", encoding='utf-8', buffering=1)
@@ -478,91 +485,94 @@ class ControlGUI:
 
         # Header
         header_frame = tk.Frame(self.scrollable_frame)
-        header_frame.pack(pady=10, padx=20, fill='x')
+        header_frame.pack(pady=(10, 4), padx=20, fill='x')
 
         tk.Label(header_frame, text="Live Audio Translator",
-                 font=("Helvetica", 18, "bold")).pack()
-        tk.Label(header_frame, text="Real-time Japanese to English translation with Speaker Diarization",
-                 font=("Helvetica", 9), fg="grey").pack()
+                 font=("Helvetica", 17, "bold")).pack()
+        tk.Label(header_frame, text="Real-time Japanese \u2192 English subtitles",
+                 font=("Helvetica", 9), fg=theme.FG_DIM).pack()
 
-        # Audio device selection
-        device_frame = tk.LabelFrame(self.scrollable_frame, text="Audio Device", padx=10, pady=10)
-        device_frame.pack(pady=5, padx=20, fill='x')
+        # ---- Session card: everything needed to get subtitles on screen ----
+        session = tk.LabelFrame(self.scrollable_frame, text="Session",
+                                padx=12, pady=10, bg=theme.BG_CARD,
+                                fg=theme.FG_DIM, font=("Helvetica", 9, "bold"))
+        session.pack(pady=6, padx=20, fill='x')
 
-        device_row = tk.Frame(device_frame)
+        device_row = tk.Frame(session, bg=theme.BG_CARD)
         device_row.pack(fill='x')
 
+        tk.Label(device_row, text="Audio device:", bg=theme.BG_CARD).pack(side="left")
         self.device_var = tk.StringVar()
         self.device_menu = tk.OptionMenu(device_row, self.device_var, "Loading...")
-        self.device_menu.pack(side="left", padx=5, expand=True, fill='x')
-
-        tk.Button(device_row, text="Refresh", command=self.refresh_devices, width=8).pack(side="right", padx=5)
+        self.device_menu.config(bg=theme.BG_FIELD, activebackground=theme.BG_FIELD,
+                                highlightthickness=0, anchor='w')
+        self.device_menu.pack(side="left", padx=8, expand=True, fill='x')
+        tk.Button(device_row, text="\u21bb Refresh", command=self.refresh_devices,
+                  width=9).pack(side="right")
+        Tooltip(self.device_menu, "The audio source to caption. To capture a stream, pick a "
+                                  "loopback device (VB-Cable, Stereo Mix); a microphone captures you.")
 
         self.refresh_devices()
         self.device_var.trace_add('write', self.on_device_select)
 
-        # ASR engine selection (applies the next time translation is started)
-        engine_frame = tk.LabelFrame(self.scrollable_frame,
-                                     text="ASR Engine (applies on next Start)",
-                                     padx=10, pady=10)
-        engine_frame.pack(pady=5, padx=20, fill='x')
+        button_frame = tk.Frame(session, bg=theme.BG_CARD)
+        button_frame.pack(pady=(10, 4))
 
-        engine_row = tk.Frame(engine_frame)
-        engine_row.pack(fill='x')
+        self.start_button = tk.Button(button_frame, text="\u25b6  Start (F5)",
+                                       command=self.start_translator, bg=theme.ACCENT,
+                                       activebackground=theme.ACCENT_ACTIVE,
+                                       fg="#08210f", activeforeground="#08210f",
+                                       font=("Helvetica", 12, "bold"), width=16, height=2,
+                                       relief="flat", cursor="hand2")
+        self.start_button.pack(side="left", padx=6)
 
-        tk.Label(engine_row, text="Engine:").pack(side="left", padx=(0, 5))
-        self.asr_backend_var = tk.StringVar(value=getattr(self.config, 'asr_backend', 'faster_whisper'))
-        tk.OptionMenu(engine_row, self.asr_backend_var,
-                      'faster_whisper', 'transformers',
-                      command=self.on_asr_backend_change).pack(side="left", padx=5)
+        self.stop_button = tk.Button(button_frame, text="\u25a0  Stop (F6)",
+                                      command=self.stop_translator, bg=theme.BG_FIELD,
+                                      activebackground=theme.DANGER,
+                                      fg=theme.FG, activeforeground="white",
+                                      font=("Helvetica", 12), width=12, height=2,
+                                      relief="flat", cursor="hand2",
+                                      state="disabled")
+        self.stop_button.pack(side="left", padx=6)
 
-        tk.Label(engine_row, text="Precision:").pack(side="left", padx=(15, 5))
-        self.compute_type_var = tk.StringVar(value=getattr(self.config, 'compute_type', 'auto'))
-        tk.OptionMenu(engine_row, self.compute_type_var,
-                      'auto', 'float16', 'int8_float16', 'int8',
-                      command=self.on_compute_type_change).pack(side="left", padx=5)
-
-        tk.Label(engine_row, text="Output:").pack(side="left", padx=(15, 5))
-        self.output_mode_var = tk.StringVar(value=getattr(self.config, 'output_mode', 'translate'))
-        tk.OptionMenu(engine_row, self.output_mode_var,
-                      'translate', 'transcribe', 'both',
-                      command=self.on_output_mode_change).pack(side="left", padx=5)
-
-        # Status
-        status_frame = tk.Frame(self.scrollable_frame)
-        status_frame.pack(pady=10, padx=20, fill='x')
+        status_frame = tk.Frame(session, bg=theme.BG_CARD)
+        status_frame.pack(pady=(4, 0), fill='x')
 
         self.status_label = tk.Label(status_frame, text="Status: Ready",
-                                      font=("Helvetica", 11, "bold"), fg="green")
+                                      font=("Helvetica", 11, "bold"),
+                                      fg=theme.ACCENT, bg=theme.BG_CARD)
         self.status_label.pack()
 
+        self.load_progress = ttk.Progressbar(status_frame, mode="indeterminate", length=260)
+        # not packed until loading starts
+
         self.diarization_status_label = tk.Label(status_frame, text="Speaker Diarization: Disabled",
-                                                   font=("Helvetica", 9), fg="gray")
+                                                   font=("Helvetica", 9),
+                                                   fg=theme.FG_FAINT, bg=theme.BG_CARD)
         self.diarization_status_label.pack()
 
-        # Control buttons
-        button_frame = tk.Frame(self.scrollable_frame)
-        button_frame.pack(pady=5, padx=20)
+        # Live feedback: audio level meter + last translation
+        meter_row = tk.Frame(session, bg=theme.BG_CARD)
+        meter_row.pack(fill='x', pady=(8, 0))
+        tk.Label(meter_row, text="Audio", font=("Helvetica", 8),
+                 fg=theme.FG_FAINT, bg=theme.BG_CARD).pack(side="left")
+        self.level_meter = tk.Canvas(meter_row, height=10, bg=theme.METER_BG,
+                                     highlightthickness=0)
+        self.level_meter.pack(side="left", fill='x', expand=True, padx=8)
+        Tooltip(self.level_meter, "Live input level. If this stays empty while the stream is "
+                                  "audible, the wrong audio device is selected. The tick marks "
+                                  "the volume threshold.")
 
-        self.download_button = tk.Button(button_frame, text="Download Model",
-                                         command=self.download_model, bg="#007bff",
-                                         fg="white", font=("Helvetica", 11), width=14, height=2)
-        self.download_button.pack(side="left", padx=5)
-
-        self.start_button = tk.Button(button_frame, text="Start (F5)",
-                                       command=self.start_translator, bg="#28a745",
-                                       fg="white", font=("Helvetica", 11), width=12, height=2)
-        self.start_button.pack(side="left", padx=5)
-
-        self.stop_button = tk.Button(button_frame, text="Stop (F6)",
-                                      command=self.stop_translator, bg="#dc3545",
-                                      fg="white", font=("Helvetica", 11), width=12, height=2,
-                                      state="disabled")
-        self.stop_button.pack(side="left", padx=5)
+        self.last_translation_label = tk.Label(
+            session, text="\u2014", font=("Helvetica", 10, "italic"),
+            fg=theme.FG_DIM, bg=theme.BG_CARD, wraplength=560, justify="left", anchor="w")
+        self.last_translation_label.pack(fill='x', pady=(6, 0))
+        Tooltip(self.last_translation_label, "Most recent subtitle, mirrored here so you can "
+                                             "check output without looking at the overlay.")
 
         # Quick action buttons
         quick_frame = tk.Frame(self.scrollable_frame)
-        quick_frame.pack(pady=5, padx=20)
+        quick_frame.pack(pady=4, padx=20)
 
         tk.Button(quick_frame, text="History (Ctrl+H)", command=self.history_panel.show, width=14).pack(side="left", padx=3)
         tk.Button(quick_frame, text="Statistics", command=self.stats_panel.show, width=12).pack(side="left", padx=3)
@@ -582,34 +592,108 @@ class ControlGUI:
 
         self.dynamic_chunk_var = tk.BooleanVar(value=self.config.use_dynamic_chunking)
         tk.Checkbutton(dynamic_frame, text="Enable Dynamic Chunks (Recommended)",
-                       variable=self.dynamic_chunk_var, font=("Helvetica", 10)).grid(row=0, column=0, columnspan=4, sticky="w")
+                       variable=self.dynamic_chunk_var, font=("Helvetica", 10)).pack(anchor="w")
 
-        tk.Label(dynamic_frame, text="Silence Timeout (s):").grid(row=1, column=0, sticky="w", pady=2)
-        self.dyn_silence_var = tk.StringVar(value=str(self.config.dynamic_silence_timeout))
-        tk.Entry(dynamic_frame, textvariable=self.dyn_silence_var, width=8).grid(row=1, column=1, padx=5, sticky="w")
+        self.dyn_silence_var = tk.DoubleVar(value=float(self.config.dynamic_silence_timeout))
+        labeled_scale(dynamic_frame, "Silence timeout", 0.2, 3.0, self.dyn_silence_var,
+                      fmt="{:.1f}s", resolution=0.1,
+                      tooltip="How long a pause ends the current subtitle chunk. Lower = "
+                              "snappier subtitles; higher = fewer mid-sentence cuts."
+                      ).pack(fill='x', pady=2)
 
-        tk.Label(dynamic_frame, text="Max Duration (s):").grid(row=1, column=2, sticky="w", padx=(10,0))
-        self.dyn_max_dur_var = tk.StringVar(value=str(self.config.dynamic_max_chunk_duration))
-        tk.Entry(dynamic_frame, textvariable=self.dyn_max_dur_var, width=8).grid(row=1, column=3, padx=5, sticky="w")
+        self.dyn_max_dur_var = tk.DoubleVar(value=float(self.config.dynamic_max_chunk_duration))
+        labeled_scale(dynamic_frame, "Max chunk duration", 2.0, 15.0, self.dyn_max_dur_var,
+                      fmt="{:.1f}s", resolution=0.5,
+                      tooltip="Hard cap per chunk. Speaker diarization works best at 10s or "
+                              "more; plain subtitles feel best around 6-8s."
+                      ).pack(fill='x', pady=2)
 
-        tk.Label(dynamic_frame, text="Min Speech (s):").grid(row=2, column=0, sticky="w", pady=2)
-        self.dyn_min_speech_var = tk.StringVar(value=str(self.config.dynamic_min_speech_duration))
-        tk.Entry(dynamic_frame, textvariable=self.dyn_min_speech_var, width=8).grid(row=2, column=1, padx=5, sticky="w")
+        self.dyn_min_speech_var = tk.DoubleVar(value=float(self.config.dynamic_min_speech_duration))
+        labeled_scale(dynamic_frame, "Min speech duration", 0.1, 2.0, self.dyn_min_speech_var,
+                      fmt="{:.1f}s", resolution=0.1,
+                      tooltip="Speech bursts shorter than this are ignored. Raise it if "
+                              "coughs/keyboard sounds produce junk subtitles."
+                      ).pack(fill='x', pady=2)
 
         # VAD settings
         vad_frame = tk.LabelFrame(audio_tab, text="Voice Activity Detection", padx=10, pady=10)
         vad_frame.pack(pady=5, fill="x")
 
         self.vad_var = tk.BooleanVar(value=self.config.use_vad_filter)
-        tk.Checkbutton(vad_frame, text="Enable VAD Filter", variable=self.vad_var, font=("Helvetica", 10)).grid(row=0, column=0, columnspan=2, sticky="w")
+        tk.Checkbutton(vad_frame, text="Enable VAD Filter", variable=self.vad_var, font=("Helvetica", 10)).pack(anchor="w")
 
-        tk.Label(vad_frame, text="Volume Threshold:").grid(row=1, column=0, sticky="w", pady=2)
-        self.volume_var = tk.StringVar(value=str(self.config.volume_threshold))
-        tk.Entry(vad_frame, textvariable=self.volume_var, width=8).grid(row=1, column=1, padx=5, sticky="w")
+        self.volume_var = tk.DoubleVar(value=float(self.config.volume_threshold))
+        labeled_scale(vad_frame, "Volume threshold", 0.0005, 0.02, self.volume_var,
+                      fmt="{:.4f}", resolution=0.0005,
+                      tooltip="Minimum input level treated as sound (the orange tick on the "
+                              "session meter). Raise it if room noise triggers subtitles; "
+                              "lower it if quiet speech is missed."
+                      ).pack(fill='x', pady=2)
 
-        tk.Label(vad_frame, text="VAD Threshold (%):").grid(row=2, column=0, sticky="w", pady=2)
-        self.vad_threshold_var = tk.StringVar(value=str(int(self.config.vad_threshold * 100)))
-        tk.Entry(vad_frame, textvariable=self.vad_threshold_var, width=8).grid(row=2, column=1, padx=5, sticky="w")
+        self.vad_threshold_var = tk.IntVar(value=int(self.config.vad_threshold * 100))
+        labeled_scale(vad_frame, "VAD sensitivity", 0, 100, self.vad_threshold_var,
+                      fmt="{:.0f}%", resolution=1,
+                      tooltip="How sure the voice detector must be before treating sound as "
+                              "speech. Higher = stricter (fewer false subtitles, may clip "
+                              "soft speech)."
+                      ).pack(fill='x', pady=2)
+
+        # Tab: Engine (ASR backend + output mode + model download)
+        engine_tab = tk.Frame(settings_notebook, padx=10, pady=10)
+        settings_notebook.add(engine_tab, text="Engine")
+
+        asr_frame = tk.LabelFrame(engine_tab, text="ASR Engine (applies on next Start)",
+                                  padx=10, pady=10)
+        asr_frame.pack(pady=5, fill="x")
+
+        row = tk.Frame(asr_frame)
+        row.pack(fill='x')
+        tk.Label(row, text="Engine:").pack(side="left", padx=(0, 5))
+        self.asr_backend_var = tk.StringVar(value=getattr(self.config, 'asr_backend', 'faster-whisper'))
+        engine_menu = tk.OptionMenu(row, self.asr_backend_var,
+                      'faster-whisper', 'transformers',
+                      command=self.on_asr_backend_change)
+        engine_menu.pack(side="left", padx=5)
+        Tooltip(engine_menu, "faster-whisper (CTranslate2) is 2-4x faster with lower VRAM. "
+                             "transformers is the original engine, kept as a fallback; the app "
+                             "also falls back to it automatically if faster-whisper can't load.")
+
+        tk.Label(row, text="Precision:").pack(side="left", padx=(15, 5))
+        self.compute_type_var = tk.StringVar(value=getattr(self.config, 'compute_type', 'auto'))
+        precision_menu = tk.OptionMenu(row, self.compute_type_var,
+                      'auto', 'float16', 'int8_float16', 'int8',
+                      command=self.on_compute_type_change)
+        precision_menu.pack(side="left", padx=5)
+        Tooltip(precision_menu, "faster-whisper compute type. auto = float16 on GPU, int8 on CPU. "
+                                "int8_float16 halves VRAM for a small accuracy cost.")
+
+        output_frame = tk.LabelFrame(engine_tab, text="Subtitle Output", padx=10, pady=10)
+        output_frame.pack(pady=5, fill="x")
+
+        out_row = tk.Frame(output_frame)
+        out_row.pack(fill='x')
+        tk.Label(out_row, text="Output:").pack(side="left", padx=(0, 5))
+        self.output_mode_var = tk.StringVar(value=getattr(self.config, 'output_mode', 'translate'))
+        output_menu = tk.OptionMenu(out_row, self.output_mode_var,
+                      'translate', 'transcribe', 'both',
+                      command=self.on_output_mode_change)
+        output_menu.pack(side="left", padx=5)
+        tk.Label(output_frame,
+                 text="translate: English subtitles \u2022 transcribe: Japanese subtitles \u2022 "
+                      "both: Japanese line above English (roughly 2x GPU per chunk)",
+                 font=("Helvetica", 9), fg=theme.FG_DIM,
+                 wraplength=560, justify="left").pack(anchor='w', pady=(5, 0))
+
+        model_frame = tk.LabelFrame(engine_tab, text="Models", padx=10, pady=10)
+        model_frame.pack(pady=5, fill="x")
+        self.download_button = tk.Button(model_frame, text="Download Model",
+                                         command=self.download_model, bg=theme.INFO,
+                                         activebackground=theme.INFO,
+                                         fg="white", activeforeground="white",
+                                         relief="flat", width=16)
+        self.download_button.pack(side="left", padx=5)
+        tk.Label(model_frame, text="Models also download automatically on first Start.",
+                 font=("Helvetica", 9), fg=theme.FG_DIM).pack(side="left", padx=8)
 
         # Tab 2: Speaker Diarization (NEW)
         diarization_tab = tk.Frame(settings_notebook, padx=10, pady=10)
@@ -655,12 +739,14 @@ class ControlGUI:
         speaker_settings_frame.pack(pady=5, fill="x")
 
         tk.Label(speaker_settings_frame, text="Min Speakers:").grid(row=0, column=0, sticky="w", pady=2)
-        self.min_speakers_var = tk.StringVar(value=str(self.config.min_speakers))
-        tk.Entry(speaker_settings_frame, textvariable=self.min_speakers_var, width=5).grid(row=0, column=1, padx=5, sticky="w")
+        self.min_speakers_var = tk.IntVar(value=int(self.config.min_speakers))
+        ttk.Spinbox(speaker_settings_frame, from_=1, to=10, textvariable=self.min_speakers_var,
+                    width=4).grid(row=0, column=1, padx=5, sticky="w")
 
         tk.Label(speaker_settings_frame, text="Max Speakers:").grid(row=0, column=2, sticky="w", pady=2, padx=(10,0))
-        self.max_speakers_var = tk.StringVar(value=str(self.config.max_speakers))
-        tk.Entry(speaker_settings_frame, textvariable=self.max_speakers_var, width=5).grid(row=0, column=3, padx=5, sticky="w")
+        self.max_speakers_var = tk.IntVar(value=int(self.config.max_speakers))
+        ttk.Spinbox(speaker_settings_frame, from_=1, to=10, textvariable=self.max_speakers_var,
+                    width=4).grid(row=0, column=3, padx=5, sticky="w")
 
         self.show_speaker_colors_var = tk.BooleanVar(value=self.config.show_speaker_colors)
         tk.Checkbutton(speaker_settings_frame, text="Show speaker colors in subtitle",
@@ -731,51 +817,80 @@ class ControlGUI:
         font_frame = tk.LabelFrame(appearance_tab, text="Font Settings", padx=10, pady=10)
         font_frame.pack(pady=5, fill="x")
 
-        tk.Label(font_frame, text="Font Size:").grid(row=0, column=0, sticky="w", pady=2)
-        self.font_var = tk.StringVar(value=str(self.config.font_size))
-        self.font_entry = tk.Entry(font_frame, textvariable=self.font_var, width=8)
-        self.font_entry.grid(row=0, column=1, padx=5, sticky="w")
-        self.font_entry.bind('<KeyRelease>', self.update_subtitle_style)
+        self.font_var = tk.IntVar(value=int(self.config.font_size))
+        labeled_scale(font_frame, "Font size", 12, 64, self.font_var,
+                      fmt="{:.0f}px", resolution=1,
+                      command=self.update_subtitle_style,
+                      tooltip="Applies live - use Preview (below) to see it without starting."
+                      ).pack(fill='x', pady=2)
 
-        tk.Label(font_frame, text="Font Weight:").grid(row=0, column=2, sticky="w", padx=(10, 0))
+        style_row = tk.Frame(font_frame)
+        style_row.pack(fill='x', pady=2)
+        tk.Label(style_row, text="Font Weight:").pack(side="left")
         self.font_weight_var = tk.StringVar(value=self.config.font_weight)
-        tk.OptionMenu(font_frame, self.font_weight_var, 'normal', 'bold',
-                      command=self.on_font_weight_change).grid(row=0, column=3, padx=5, sticky="w")
+        tk.OptionMenu(style_row, self.font_weight_var, 'normal', 'bold',
+                      command=self.on_font_weight_change).pack(side="left", padx=5)
 
-        tk.Label(font_frame, text="Font Color:").grid(row=1, column=0, sticky="w", pady=2)
-        self.font_color_btn = tk.Button(font_frame, text="Pick", command=self.pick_font_color, width=6)
-        self.font_color_btn.grid(row=1, column=1, padx=5, sticky="w")
-        self.font_color_display = tk.Label(font_frame, text='    ', bg=self.config.subtitle_font_color, relief="solid", borderwidth=1)
-        self.font_color_display.grid(row=1, column=2, padx=5, sticky="w")
+        tk.Label(style_row, text="Font Color:").pack(side="left", padx=(12, 0))
+        self.font_color_btn = tk.Button(style_row, text="Pick", command=self.pick_font_color, width=6)
+        self.font_color_btn.pack(side="left", padx=5)
+        self.font_color_display = tk.Label(style_row, text='    ', bg=self.config.subtitle_font_color, relief="solid", borderwidth=1)
+        self.font_color_display.pack(side="left", padx=5)
 
         self.text_shadow_var = tk.BooleanVar(value=getattr(self.config, 'text_shadow', True))
-        tk.Checkbutton(font_frame, text="Text Shadow", variable=self.text_shadow_var,
-                       command=self.on_text_shadow_change).grid(row=1, column=3, sticky="w")
+        tk.Checkbutton(style_row, text="Text Shadow", variable=self.text_shadow_var,
+                       command=self.on_text_shadow_change).pack(side="left", padx=(12, 0))
 
         # Background settings
         bg_frame = tk.LabelFrame(appearance_tab, text="Background Settings", padx=10, pady=10)
         bg_frame.pack(pady=5, fill="x")
 
-        tk.Label(bg_frame, text="BG Mode:").grid(row=0, column=0, sticky="w", pady=2)
+        self.opacity_var = tk.IntVar(value=int(self.config.window_opacity * 100))
+        labeled_scale(bg_frame, "Opacity", 10, 100, self.opacity_var,
+                      fmt="{:.0f}%", resolution=1,
+                      command=self.on_opacity_change,
+                      tooltip="Overlay window opacity. Applies live."
+                      ).pack(fill='x', pady=2)
+
+        bg_row = tk.Frame(bg_frame)
+        bg_row.pack(fill='x', pady=2)
+        tk.Label(bg_row, text="BG Mode:").pack(side="left")
         self.bg_mode_var = tk.StringVar(value=self.config.subtitle_bg_mode)
-        tk.OptionMenu(bg_frame, self.bg_mode_var, 'transparent', 'solid',
-                      command=self.set_bg_mode).grid(row=0, column=1, padx=5, sticky="w")
+        tk.OptionMenu(bg_row, self.bg_mode_var, 'transparent', 'solid',
+                      command=self.set_bg_mode).pack(side="left", padx=5)
 
-        tk.Label(bg_frame, text="Opacity (%):").grid(row=0, column=2, sticky="w", padx=(10,0))
-        self.opacity_var = tk.StringVar(value=str(int(self.config.window_opacity * 100)))
-        self.opacity_entry = tk.Entry(bg_frame, textvariable=self.opacity_var, width=8)
-        self.opacity_entry.grid(row=0, column=3, padx=5, sticky="w")
-        self.opacity_entry.bind('<KeyRelease>', self.on_opacity_change)
-
-        tk.Label(bg_frame, text="BG Color:").grid(row=1, column=0, sticky="w", pady=2)
-        self.bg_color_btn = tk.Button(bg_frame, text="Pick", command=self.pick_bg_color, width=6)
-        self.bg_color_btn.grid(row=1, column=1, padx=5, sticky="w")
-        self.bg_color_display = tk.Label(bg_frame, text='    ', bg=self.config.subtitle_bg_color, relief="solid", borderwidth=1)
-        self.bg_color_display.grid(row=1, column=2, padx=5, sticky="w")
+        tk.Label(bg_row, text="BG Color:").pack(side="left", padx=(12, 0))
+        self.bg_color_btn = tk.Button(bg_row, text="Pick", command=self.pick_bg_color, width=6)
+        self.bg_color_btn.pack(side="left", padx=5)
+        self.bg_color_display = tk.Label(bg_row, text='    ', bg=self.config.subtitle_bg_color, relief="solid", borderwidth=1)
+        self.bg_color_display.pack(side="left", padx=5)
 
         # Position controls
         self.position_control = SubtitlePositionControl(self.root, self.on_subtitle_position_change)
         self.position_control.create(appearance_tab).pack(pady=5, fill="x")
+
+        # Overlay behavior + styling preview
+        overlay_frame = tk.LabelFrame(appearance_tab, text="Overlay", padx=10, pady=10)
+        overlay_frame.pack(pady=5, fill="x")
+
+        self.preview_button = tk.Button(overlay_frame, text="Preview subtitles",
+                                        command=self.toggle_subtitle_preview, width=16)
+        self.preview_button.pack(side="left", padx=5)
+        Tooltip(self.preview_button, "Shows a sample subtitle on the overlay so font, colors, "
+                                     "opacity and position can be styled without starting "
+                                     "translation.")
+
+        self.click_through_var = tk.BooleanVar(value=getattr(self.config, 'overlay_click_through', False))
+        ct = tk.Checkbutton(overlay_frame, text="Click-through overlay",
+                            variable=self.click_through_var,
+                            command=self.on_click_through_change)
+        ct.pack(side="left", padx=(15, 0))
+        Tooltip(ct, "Mouse clicks pass through the overlay to whatever is behind it "
+                    "(Windows only). While enabled the overlay can't be dragged - use the "
+                    "Position buttons above, or untick to drag again.")
+
+        tk.Label(overlay_frame, text="Ctrl+= / Ctrl+- adjust font size",
+                 font=("Helvetica", 8), fg=theme.FG_FAINT).pack(side="right")
 
         # Tab 4: Presets
         presets_tab = tk.Frame(settings_notebook, padx=10, pady=10)
@@ -803,13 +918,11 @@ class ControlGUI:
 
         self.refresh_preset_list()
 
-        # Shortcuts info
-        shortcuts_frame = tk.LabelFrame(self.scrollable_frame, text="Keyboard Shortcuts", padx=10, pady=5)
-        shortcuts_frame.pack(pady=10, padx=20, fill='x')
-
-        tk.Label(shortcuts_frame, text="F5: Start  |  F6: Stop  |  Ctrl+H: History  |  Ctrl+L: Log  |  Ctrl+Q: Quit\n"
-                                        "Subtitle Window: Drag to move  |  Ctrl+C: Copy  |  Ctrl+S: Save  |  Esc: Stop",
-                 font=("Consolas", 9), justify="center").pack(pady=5)
+        # Shortcuts footer
+        tk.Label(self.scrollable_frame,
+                 text="F5 Start \u00b7 F6 Stop \u00b7 Ctrl+H History \u00b7 Ctrl+L Log \u00b7 "
+                      "Ctrl+Q Quit \u00b7 overlay: drag to move, Esc stops",
+                 font=("Helvetica", 8), fg=theme.FG_FAINT).pack(pady=(6, 10))
 
     def _toggle_token_visibility(self):
         if self.show_token_var.get():
@@ -875,31 +988,31 @@ class ControlGUI:
         self.config.font_weight = "bold"
         self.config.text_shadow = True
         self.config.use_dynamic_chunking = True
-        self.config.dynamic_silence_timeout = 1.2
-        self.config.dynamic_max_chunk_duration = 15.0
+        self.config.dynamic_silence_timeout = 0.9
+        self.config.dynamic_max_chunk_duration = 8.0
         self.config.dynamic_min_speech_duration = 0.3
         self.config.use_speaker_diarization = DEFAULT_USE_DIARIZATION
         self.config.min_speakers = DEFAULT_MIN_SPEAKERS
         self.config.max_speakers = DEFAULT_MAX_SPEAKERS
 
         # Update UI
-        self.volume_var.set(str(self.config.volume_threshold))
+        self.volume_var.set(float(self.config.volume_threshold))
         self.vad_var.set(self.config.use_vad_filter)
-        self.vad_threshold_var.set(str(int(self.config.vad_threshold * 100)))
-        self.font_var.set(str(self.config.font_size))
+        self.vad_threshold_var.set(int(self.config.vad_threshold * 100))
+        self.font_var.set(int(self.config.font_size))
         self.font_weight_var.set(self.config.font_weight)
-        self.opacity_var.set(str(int(self.config.window_opacity * 100)))
+        self.opacity_var.set(int(self.config.window_opacity * 100))
         self.bg_mode_var.set(self.config.subtitle_bg_mode)
         self.bg_color_display.config(bg=self.config.subtitle_bg_color)
         self.font_color_display.config(bg=self.config.subtitle_font_color)
         self.text_shadow_var.set(self.config.text_shadow)
         self.dynamic_chunk_var.set(self.config.use_dynamic_chunking)
-        self.dyn_silence_var.set(str(self.config.dynamic_silence_timeout))
-        self.dyn_max_dur_var.set(str(self.config.dynamic_max_chunk_duration))
-        self.dyn_min_speech_var.set(str(self.config.dynamic_min_speech_duration))
+        self.dyn_silence_var.set(float(self.config.dynamic_silence_timeout))
+        self.dyn_max_dur_var.set(float(self.config.dynamic_max_chunk_duration))
+        self.dyn_min_speech_var.set(float(self.config.dynamic_min_speech_duration))
         self.diarization_var.set(self.config.use_speaker_diarization)
-        self.min_speakers_var.set(str(self.config.min_speakers))
-        self.max_speakers_var.set(str(self.config.max_speakers))
+        self.min_speakers_var.set(int(self.config.min_speakers))
+        self.max_speakers_var.set(int(self.config.max_speakers))
 
         self.update_subtitle_style()
         self.config.save_config()
@@ -941,9 +1054,106 @@ class ControlGUI:
         self.worker_threads = []
         self.destroy_subtitle_window()
         self.start_button.config(state="normal")
-        self.stop_button.config(state="disabled")
-        self.status_label.config(text="Status: Stopped", fg="red")
-        self.diarization_status_label.config(text="Speaker Diarization: Disabled", fg="gray")
+        self.stop_button.config(state="disabled", bg=theme.BG_FIELD, fg=theme.FG)
+        self.status_label.config(text="Status: Stopped", fg=theme.FG_DIM)
+        self.diarization_status_label.config(text="Speaker Diarization: Disabled", fg=theme.FG_FAINT)
+        self._hide_load_progress()
+        try:
+            self.level_meter.delete("all")
+        except tk.TclError:
+            pass
+
+    PREVIEW_TEXT = "\u3053\u3093\u306b\u3061\u306f\u3001\u30d7\u30ec\u30d3\u30e5\u30fc\u3067\u3059\uff01\nHello, this is a preview!"
+
+    def toggle_subtitle_preview(self):
+        """Show/hide a sample subtitle so appearance can be tuned without
+        starting translation. A running session already shows live text."""
+        if self.worker_threads:
+            messagebox.showinfo("Preview", "Translation is running - the overlay already shows live subtitles.")
+            return
+        if getattr(self, '_preview_active', False):
+            self._preview_active = False
+            self.preview_button.config(text="Preview subtitles")
+            self.destroy_subtitle_window()
+            return
+        self._preview_active = True
+        self.preview_button.config(text="Hide preview")
+        self.create_subtitle_window()
+        self.update_subtitle_text({"text": self.PREVIEW_TEXT, "display_text": self.PREVIEW_TEXT})
+
+    def on_click_through_change(self):
+        self.config.overlay_click_through = self.click_through_var.get()
+        self._apply_click_through()
+
+    def _apply_click_through(self):
+        """Let mouse clicks pass through the overlay (Windows only)."""
+        if not self.subtitle_window or not self.subtitle_window.winfo_exists():
+            return
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            GA_ROOT = 2
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetAncestor(self.subtitle_window.winfo_id(), GA_ROOT)
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if getattr(self.config, 'overlay_click_through', False):
+                style |= WS_EX_LAYERED | WS_EX_TRANSPARENT
+            else:
+                style &= ~WS_EX_TRANSPARENT
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        except Exception as e:
+            logger.warning(f"Could not set overlay click-through: {e}")
+
+    def adjust_font_size(self, delta):
+        size = max(12, min(64, int(self.config.font_size) + delta))
+        self.config.font_size = size
+        try:
+            self.font_var.set(size)
+        except tk.TclError:
+            pass
+        self.update_subtitle_style()
+
+    def update_level_meter(self, rms):
+        """Draw the audio input level with a tick at the volume threshold.
+
+        Level is mapped as sqrt(rms / 0.25) so quiet speech is still visible.
+        """
+        if not self.level_meter.winfo_exists():
+            return
+        try:
+            width = max(self.level_meter.winfo_width(), 1)
+            height = self.level_meter.winfo_height()
+            frac = min((max(rms, 0.0) / 0.25) ** 0.5, 1.0)
+            thr = min((max(self.config.volume_threshold, 0.0) / 0.25) ** 0.5, 1.0)
+            speaking = rms >= self.config.volume_threshold
+            self.level_meter.delete("all")
+            if frac > 0:
+                self.level_meter.create_rectangle(
+                    0, 0, int(width * frac), height,
+                    fill=theme.ACCENT if speaking else theme.FG_FAINT, width=0)
+            tick_x = int(width * thr)
+            self.level_meter.create_line(tick_x, 0, tick_x, height,
+                                         fill=theme.WARN, width=2)
+        except tk.TclError:
+            pass
+
+    def _show_load_progress(self):
+        try:
+            self.load_progress.pack(pady=(2, 2))
+            self.load_progress.start(12)
+        except tk.TclError:
+            pass
+
+    def _hide_load_progress(self):
+        try:
+            self.load_progress.stop()
+            self.load_progress.pack_forget()
+        except tk.TclError:
+            pass
 
     def check_gui_queue(self):
         try:
@@ -951,22 +1161,33 @@ class ControlGUI:
                 msg_type, data = self.gui_queue.get_nowait()
                 if msg_type == "subtitle":
                     self.update_subtitle_text(data)
+                    if isinstance(data, dict) and data.get('text', '').strip():
+                        preview = data['text'].replace('\n', '  \u2022  ')
+                        self.last_translation_label.config(text=preview, fg=theme.FG)
                 elif msg_type == "speaker_update":
                     self.update_speaker_label(data)
+                elif msg_type == "audio_level":
+                    self.update_level_meter(data)
                 elif msg_type == "model_loaded":
-                    self.status_label.config(text="Status: Running", fg="green")
-                    self.stop_button.config(state="normal")
+                    self.status_label.config(text="Status: Running", fg=theme.ACCENT)
+                    self.stop_button.config(state="normal", bg=theme.DANGER,
+                                            fg="white")
+                    self._hide_load_progress()
                 elif msg_type == "status":
-                    self.status_label.config(text=f"Status: {data}", fg="orange")
+                    self.status_label.config(text=f"Status: {data}", fg=theme.WARN)
+                elif msg_type == "engine":
+                    self.status_label.config(text=f"Status: Running \u00b7 {data}",
+                                             fg=theme.ACCENT)
                 elif msg_type == "diarization_status":
                     if data:
-                        self.diarization_status_label.config(text="Speaker Diarization: ENABLED", fg="green")
+                        self.diarization_status_label.config(text="Speaker Diarization: ENABLED", fg=theme.ACCENT)
                         self.diarization_enabled = True
                     else:
-                        self.diarization_status_label.config(text="Speaker Diarization: Disabled", fg="gray")
+                        self.diarization_status_label.config(text="Speaker Diarization: Disabled", fg=theme.FG_FAINT)
                         self.diarization_enabled = False
                 elif msg_type == "error":
-                    self.status_label.config(text="Status: Error!", fg="red")
+                    self.status_label.config(text="Status: Error!", fg=theme.DANGER)
+                    self._hide_load_progress()
                     if self.subtitle_label:
                         self.update_subtitle_text({"text": f"ERROR: {data}", "display_text": f"ERROR: {data}"})
                     self.stop_translator()
@@ -993,7 +1214,10 @@ class ControlGUI:
         self.subtitle_window.geometry(f"{win_width}x{win_height}+{x}+{y}")
         self.subtitle_window.wm_attributes("-topmost", True)
         self.subtitle_window.config(bg='green')
-        self.subtitle_window.wm_attributes("-transparentcolor", "green")
+        try:
+            self.subtitle_window.wm_attributes("-transparentcolor", "green")
+        except tk.TclError:
+            pass  # Windows-only attribute; other platforms show the chroma bg
 
         self.background_canvas = tk.Canvas(self.subtitle_window, bg='green', highlightthickness=0)
         self.background_canvas.pack(pady=20, padx=20, expand=True, fill="both")
@@ -1043,6 +1267,7 @@ class ControlGUI:
             widget.bind("<B1-Motion>", self.do_drag)
             widget.bind("<Control-c>", self.copy_subtitle)
             widget.bind("<Control-s>", self.save_subtitle_history)
+        self._apply_click_through()
 
     def destroy_subtitle_window(self):
         if self.subtitle_window:
@@ -1497,12 +1722,18 @@ class ControlGUI:
         self.stats.reset()
         self.start_button.config(state="disabled")
         self.stop_button.config(state="disabled")
-        self.status_label.config(text="Status: Loading model(s)...", fg="orange")
+        self.status_label.config(text="Status: Loading model(s)...", fg=theme.WARN)
+        self._show_load_progress()
+        self.last_translation_label.config(text="\u2014", fg=theme.FG_DIM)
+        self.update_level_meter(0.0)
 
         if self.config.use_speaker_diarization:
             self.diarization_status_label.config(text="Speaker Diarization: Loading...", fg="orange")
         self.root.update_idletasks()
 
+        if getattr(self, '_preview_active', False):
+            self._preview_active = False
+            self.preview_button.config(text="Preview subtitles")
         self.create_subtitle_window()
         self.stop_event = threading.Event()
         # Small queue keeps subtitles from lagging far behind live audio when
@@ -1716,23 +1947,23 @@ class ControlGUI:
                     setattr(self.config, key, value)
 
             # Update UI
-            self.volume_var.set(str(self.config.volume_threshold))
-            self.opacity_var.set(str(int(self.config.window_opacity * 100)))
-            self.font_var.set(str(self.config.font_size))
+            self.volume_var.set(float(self.config.volume_threshold))
+            self.opacity_var.set(int(self.config.window_opacity * 100))
+            self.font_var.set(int(self.config.font_size))
             self.font_weight_var.set(self.config.font_weight)
             self.vad_var.set(self.config.use_vad_filter)
-            self.vad_threshold_var.set(str(int(self.config.vad_threshold * 100)))
+            self.vad_threshold_var.set(int(self.config.vad_threshold * 100))
             self.bg_mode_var.set(self.config.subtitle_bg_mode)
             self.bg_color_display.config(bg=self.config.subtitle_bg_color)
             self.font_color_display.config(bg=self.config.subtitle_font_color)
             self.text_shadow_var.set(self.config.text_shadow)
             self.dynamic_chunk_var.set(self.config.use_dynamic_chunking)
-            self.dyn_silence_var.set(str(self.config.dynamic_silence_timeout))
-            self.dyn_max_dur_var.set(str(self.config.dynamic_max_chunk_duration))
-            self.dyn_min_speech_var.set(str(self.config.dynamic_min_speech_duration))
+            self.dyn_silence_var.set(float(self.config.dynamic_silence_timeout))
+            self.dyn_max_dur_var.set(float(self.config.dynamic_max_chunk_duration))
+            self.dyn_min_speech_var.set(float(self.config.dynamic_min_speech_duration))
             self.diarization_var.set(getattr(self.config, 'use_speaker_diarization', False))
-            self.min_speakers_var.set(str(getattr(self.config, 'min_speakers', 1)))
-            self.max_speakers_var.set(str(getattr(self.config, 'max_speakers', 5)))
+            self.min_speakers_var.set(int(getattr(self.config, 'min_speakers', 1)))
+            self.max_speakers_var.set(int(getattr(self.config, 'max_speakers', 5)))
 
             self.update_subtitle_style()
             messagebox.showinfo("Success", f"Preset '{preset_name}' loaded.")

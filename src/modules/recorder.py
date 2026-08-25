@@ -1,5 +1,6 @@
 
 import os
+import time
 import numpy as np
 from collections import deque
 import torch
@@ -25,6 +26,27 @@ def put_latest(audio_queue, chunk):
             except Exception:
                 pass
 
+LEVEL_INTERVAL_S = 0.1  # throttle for ("audio_level", rms) GUI messages
+
+
+class _LevelReporter:
+    """Throttled audio-level feed for the GUI meter."""
+
+    def __init__(self, gui_queue, interval=LEVEL_INTERVAL_S):
+        self.gui_queue = gui_queue
+        self.interval = interval
+        self._last = 0.0
+
+    def report(self, rms):
+        now = time.monotonic()
+        if now - self._last >= self.interval:
+            self._last = now
+            try:
+                self.gui_queue.put_nowait(("audio_level", float(rms)))
+            except Exception:
+                pass
+
+
 def recorder_thread(stop_event, audio_queue, config, gui_queue, selected_device_name=None):
     if config.use_dynamic_chunking:
         print("🎙️ Recorder thread started (Dynamic Chunking Mode).")
@@ -38,9 +60,11 @@ def fixed_recorder_thread(stop_event, audio_queue, config, gui_queue, selected_d
         target_mic = find_audio_device(selected_device_name)
         if target_mic is None:
             raise RuntimeError("No audio devices found. Cannot start recording.")
+        level = _LevelReporter(gui_queue)
         with target_mic.recorder(samplerate=SAMPLE_RATE, channels=1) as mic:
             while not stop_event.is_set():
                 data = mic.record(numframes=int(SAMPLE_RATE * config.chunk_duration))
+                level.report(np.sqrt(np.mean(data ** 2)))
                 if not stop_event.is_set():
                     put_latest(audio_queue, data)
     except Exception as e:
@@ -99,12 +123,14 @@ def dynamic_recorder_thread(stop_event, audio_queue, config, gui_queue, selected
         silence_timeout_frames = int(config.dynamic_silence_timeout * 1000 / VAD_FRAME_DURATION_MS)
         max_chunk_frames = int(config.dynamic_max_chunk_duration * 1000 / VAD_FRAME_DURATION_MS)
 
+        level = _LevelReporter(gui_queue)
         with target_mic.recorder(samplerate=SAMPLE_RATE, channels=1) as mic:
             print("🎙️ [Dynamic] Now listening...")
             while not stop_event.is_set():
                 frame_data = mic.record(numframes=VAD_FRAME_SIZE)
                 
                 rms = np.sqrt(np.mean(frame_data ** 2))
+                level.report(rms)
                 peak_level = np.max(np.abs(frame_data))
                 is_loud_sound = peak_level > 0.1
                 
