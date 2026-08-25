@@ -511,9 +511,9 @@ class ControlGUI:
         engine_row.pack(fill='x')
 
         tk.Label(engine_row, text="Engine:").pack(side="left", padx=(0, 5))
-        self.asr_backend_var = tk.StringVar(value=getattr(self.config, 'asr_backend', 'faster_whisper'))
+        self.asr_backend_var = tk.StringVar(value=getattr(self.config, 'asr_backend', 'faster-whisper'))
         tk.OptionMenu(engine_row, self.asr_backend_var,
-                      'faster_whisper', 'transformers',
+                      'faster-whisper', 'transformers',
                       command=self.on_asr_backend_change).pack(side="left", padx=5)
 
         tk.Label(engine_row, text="Precision:").pack(side="left", padx=(15, 5))

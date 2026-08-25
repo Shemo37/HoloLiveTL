@@ -5,6 +5,7 @@ import json
 import os
 
 # Constants
+CONFIG_VERSION = 2
 MODEL_ID = "kotoba-tech/kotoba-whisper-bilingual-v1.0"
 # Pre-converted CTranslate2 build of the same weights, used by faster-whisper
 FASTER_MODEL_ID = "kotoba-tech/kotoba-whisper-bilingual-v1.0-faster"
@@ -63,7 +64,7 @@ class Config:
             # Note: speaker diarization works best with chunks >= 10s; raise
             # dynamic_max_chunk_duration when enabling it.
             "dynamic_max_chunk_duration": 8.0,
-            "dynamic_silence_timeout": 0.7,
+            "dynamic_silence_timeout": 0.9,
             "dynamic_min_speech_duration": 0.3,
 
             # Audio preprocessing (high-pass + peak normalization)
@@ -97,13 +98,25 @@ class Config:
             "show_speaker_colors": True,
             "speaker_label_format": "bracket",  # 'bracket', 'prefix', 'color_only'
 
+            # Text translation stage (optional): "whisper" (built-in),
+            # "fugumt" (local MT model, free), or "deepl" (API key required)
+            "translation_engine": "whisper",
+            "deepl_api_key": None,
+            # Comma-separated names/terms fed to the ASR decoder as hotwords
+            "asr_hotwords": "",
+            # {"wrong": "right"} whole-word fixes applied to English output
+            "glossary": {},
+
             # Model settings
             "model_cache_dir": MODEL_CACHE_DIR,
-            # ASR engine: "faster_whisper" (CTranslate2, fast) or "transformers"
-            "asr_backend": "faster_whisper",
+            # ASR engine: "faster-whisper" (CTranslate2, fast) or "transformers"
+            "asr_backend": "faster-whisper",
             # faster-whisper precision: auto/float16/int8_float16/int8
             "compute_type": "auto",
-            "beam_size": 2
+            "asr_beam_size": 5,
+            # Subtitles below this confidence are dropped
+            "min_confidence": 0.30,
+            "config_version": CONFIG_VERSION
         }
 
         if os.path.exists(self.config_file):
@@ -122,6 +135,13 @@ class Config:
         """Migrate pre-versioned configs in place. Only values still equal to
         an old default are bumped to the new default; user-tuned values are
         left untouched."""
+        # Renamed/renormalized keys migrate regardless of version
+        if config.get("asr_backend") == "faster_whisper":
+            config["asr_backend"] = "faster-whisper"
+        if "beam_size" in loaded_config and "asr_beam_size" not in loaded_config:
+            config["asr_beam_size"] = loaded_config["beam_size"]
+        config.pop("beam_size", None)
+
         if loaded_config.get("config_version"):
             return
         old_defaults_to_new = {
@@ -175,9 +195,11 @@ class Config:
             self.output_mode = "translate"
             valid = False
 
-        if self.asr_backend not in ("faster_whisper", "transformers"):
-            print(f"Warning: asr_backend {self.asr_backend!r} invalid, resetting to faster_whisper")
-            self.asr_backend = "faster_whisper"
+        if self.asr_backend == "faster_whisper":  # legacy spelling
+            self.asr_backend = "faster-whisper"
+        if self.asr_backend not in ("faster-whisper", "transformers"):
+            print(f"Warning: asr_backend {self.asr_backend!r} invalid, resetting to faster-whisper")
+            self.asr_backend = "faster-whisper"
             valid = False
 
         if self.compute_type not in ("auto", "float16", "int8_float16", "int8"):
@@ -185,9 +207,19 @@ class Config:
             self.compute_type = "auto"
             valid = False
 
-        if not (1 <= int(self.beam_size) <= 10):
-            print(f"Warning: beam_size {self.beam_size} out of range, resetting to 2")
-            self.beam_size = 2
+        if not (1 <= int(self.asr_beam_size) <= 10):
+            print(f"Warning: asr_beam_size {self.asr_beam_size} out of range, resetting to 5")
+            self.asr_beam_size = 5
+            valid = False
+
+        if not (0.0 <= float(self.min_confidence) <= 1.0):
+            print(f"Warning: min_confidence {self.min_confidence} out of range, resetting to 0.30")
+            self.min_confidence = 0.30
+            valid = False
+
+        if self.translation_engine not in ("whisper", "fugumt", "deepl"):
+            print(f"Warning: translation_engine {self.translation_engine!r} invalid, resetting to whisper")
+            self.translation_engine = "whisper"
             valid = False
 
         if not (8 <= self.font_size <= 72):

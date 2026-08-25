@@ -9,6 +9,7 @@ SUBSTRING_HALLUCINATION_FILTER = [
     "thank you for watching", "thanks for watching", "bell icon",
     "see you next time", "in the next video", "like and subscribe",
     "hit the bell", "as a language model", "provide more context",
+    "forget to subscribe",
     "i'm an ai", "context is needed",
     "in central tokyo, the temperature is likely to rise rapidly from morning",
     "in central tokyo", "the temperature is likely to rise"
