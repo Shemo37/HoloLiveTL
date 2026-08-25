@@ -500,6 +500,27 @@ class ControlGUI:
         self.refresh_devices()
         self.device_var.trace_add('write', self.on_device_select)
 
+        # ASR engine selection (applies the next time translation is started)
+        engine_frame = tk.LabelFrame(self.scrollable_frame,
+                                     text="ASR Engine (applies on next Start)",
+                                     padx=10, pady=10)
+        engine_frame.pack(pady=5, padx=20, fill='x')
+
+        engine_row = tk.Frame(engine_frame)
+        engine_row.pack(fill='x')
+
+        tk.Label(engine_row, text="Engine:").pack(side="left", padx=(0, 5))
+        self.asr_backend_var = tk.StringVar(value=getattr(self.config, 'asr_backend', 'faster_whisper'))
+        tk.OptionMenu(engine_row, self.asr_backend_var,
+                      'faster_whisper', 'transformers',
+                      command=self.on_asr_backend_change).pack(side="left", padx=5)
+
+        tk.Label(engine_row, text="Precision:").pack(side="left", padx=(15, 5))
+        self.compute_type_var = tk.StringVar(value=getattr(self.config, 'compute_type', 'auto'))
+        tk.OptionMenu(engine_row, self.compute_type_var,
+                      'auto', 'float16', 'int8_float16', 'int8',
+                      command=self.on_compute_type_change).pack(side="left", padx=5)
+
         # Status
         status_frame = tk.Frame(self.scrollable_frame)
         status_frame.pack(pady=10, padx=20, fill='x')
@@ -1395,6 +1416,12 @@ class ControlGUI:
         for t in self.worker_threads:
             t.start()
         self.check_gui_queue()
+
+    def on_asr_backend_change(self, value=None):
+        self.config.asr_backend = self.asr_backend_var.get()
+
+    def on_compute_type_change(self, value=None):
+        self.config.compute_type = self.compute_type_var.get()
 
     def on_opacity_change(self, event=None):
         try:

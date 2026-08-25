@@ -8,9 +8,9 @@ import torch
 import string
 import traceback
 import logging
-from transformers import pipeline, AutoModelForSpeechSeq2Seq, AutoProcessor
 from .audio_utils import enhance_audio_quality
-from .model_utils import ensure_model_downloaded, get_kotoba_generate_kwargs, get_kotoba_pipeline_kwargs
+from .model_utils import ensure_model_downloaded
+from .asr_backend import load_backend
 from .filters import post_process_translation, is_hallucination
 from .config import SAMPLE_RATE, MODEL_ID
 
@@ -82,51 +82,6 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                 print(f"Failed to initialize speaker diarization: {e}")
                 use_diarization = False
 
-        print(f"Loading ASR model from cache...")
-
-        # Determine the appropriate dtype
-        model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-
-        # Try to load the model directly first
-        try:
-            model = AutoModelForSpeechSeq2Seq.from_pretrained(
-                model_dir,
-                torch_dtype=model_dtype,
-                low_cpu_mem_usage=True,
-                use_safetensors=True
-            )
-            processor = AutoProcessor.from_pretrained(model_dir)
-
-            # Create pipeline with loaded model and processor
-            pipe = pipeline(
-                "automatic-speech-recognition",
-                model=model,
-                tokenizer=processor.tokenizer,
-                feature_extractor=processor.feature_extractor,
-                torch_dtype=model_dtype,
-                device=device,
-                **get_kotoba_pipeline_kwargs()
-            )
-            print("Model loaded successfully from cache.")
-        except Exception as e:
-            print(f"Failed to load model from cache: {e}")
-            print("Attempting to download model directly from Hugging Face...")
-
-            # Fallback to downloading directly from Hugging Face
-            try:
-                pipe = pipeline(
-                    "automatic-speech-recognition",
-                    model=MODEL_ID,
-                    torch_dtype=model_dtype,
-                    device=device,
-                    model_kwargs={"attn_implementation": "sdpa"} if torch.cuda.is_available() else {},
-                    **get_kotoba_pipeline_kwargs()
-                )
-                print("Model loaded successfully from Hugging Face.")
-            except Exception as e2:
-                print(f"Failed to load model from Hugging Face: {e2}")
-                raise Exception(f"Could not load model: {e}, {e2}")
-
         task = "translate" if config.output_mode == "translate" else "transcribe"
         # The language token is the OUTPUT language for this model. Transcribe
         # mode must request Japanese ("ja"), never config.language_code, whose
@@ -134,7 +89,11 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
         target_lang = "en" if task == "translate" else getattr(config, 'source_language_code', 'ja')
         print(f"Setting model task to: '{task}' targeting '{target_lang}' for Japanese audio.")
 
-        generate_kwargs = get_kotoba_generate_kwargs(task, target_lang)
+        print("Loading ASR model...")
+        backend = load_backend(config, device=device, model_dir=model_dir,
+                               task=task, language=target_lang)
+        # Throwaway decode so the first real utterance doesn't pay CUDA init
+        backend.warm_up()
         print("ASR Model loaded successfully.")
 
         # Notify GUI about diarization status
@@ -203,36 +162,12 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                         logger.warning(f"Diarization error: {e}")
 
                 # Run ASR/translation
-                result = pipe({"sampling_rate": SAMPLE_RATE, "raw": audio_data},
-                            generate_kwargs=generate_kwargs)
-                processed_text = result["text"].strip()
+                result = backend.transcribe(audio_data)
+                processed_text = result.text.strip()
 
-                confidence_score = 1.0
-                if "chunks" in result and result["chunks"]:
-                    chunk_confidences = []
-                    for chunk in result["chunks"]:
-                        if "timestamp" in chunk and chunk["timestamp"]:
-                            timestamp = chunk["timestamp"]
-                            if isinstance(timestamp, (list, tuple)) and len(timestamp) == 2:
-                                duration = timestamp[1] - timestamp[0] if timestamp[1] else 1.0
-                                chunk_conf = min(0.9, 0.6 + (duration * 0.1))
-                                chunk_confidences.append(chunk_conf)
-                            else:
-                                chunk_confidences.append(0.8)
-                        else:
-                            chunk_confidences.append(0.7)
-
-                    if chunk_confidences:
-                        confidence_score = sum(chunk_confidences) / len(chunk_confidences)
-                        logger.debug(f"Chunk analysis: {len(chunk_confidences)} chunks, avg confidence: {confidence_score:.2f}")
-                else:
-                    word_count = len(processed_text.split())
-                    if word_count >= 3:
-                        confidence_score = 0.85
-                    elif word_count >= 1:
-                        confidence_score = 0.75
-                    else:
-                        confidence_score = 0.6
+                confidence_score = result.confidence
+                logger.debug(f"ASR ({result.backend}): {len(result.segments)} segments, "
+                             f"confidence {confidence_score:.2f}")
 
                 had_translation = bool(processed_text)
                 is_hallucination_result = False
@@ -281,4 +216,8 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
         traceback.print_exc()
         gui_queue.put(("error", f"Processing error: {e}"))
     finally:
+        try:
+            backend.close()
+        except NameError:
+            pass
         print("Processor thread stopped.")

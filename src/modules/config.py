@@ -6,6 +6,8 @@ import os
 
 # Constants
 MODEL_ID = "kotoba-tech/kotoba-whisper-bilingual-v1.0"
+# Pre-converted CTranslate2 build of the same weights, used by faster-whisper
+FASTER_MODEL_ID = "kotoba-tech/kotoba-whisper-bilingual-v1.0-faster"
 SAMPLE_RATE = 16000
 CHUNK_DURATION = 5
 LANGUAGE_CODE = "en"
@@ -93,7 +95,12 @@ class Config:
             "speaker_label_format": "bracket",  # 'bracket', 'prefix', 'color_only'
 
             # Model settings
-            "model_cache_dir": MODEL_CACHE_DIR
+            "model_cache_dir": MODEL_CACHE_DIR,
+            # ASR engine: "faster_whisper" (CTranslate2, fast) or "transformers"
+            "asr_backend": "faster_whisper",
+            # faster-whisper precision: auto/float16/int8_float16/int8
+            "compute_type": "auto",
+            "beam_size": 2
         }
 
         if os.path.exists(self.config_file):
@@ -140,6 +147,21 @@ class Config:
         if not (0.0 <= self.window_opacity <= 1.0):
             print(f"Warning: window_opacity {self.window_opacity} out of range, resetting to default")
             self.window_opacity = DEFAULT_WINDOW_OPACITY
+            valid = False
+
+        if self.asr_backend not in ("faster_whisper", "transformers"):
+            print(f"Warning: asr_backend {self.asr_backend!r} invalid, resetting to faster_whisper")
+            self.asr_backend = "faster_whisper"
+            valid = False
+
+        if self.compute_type not in ("auto", "float16", "int8_float16", "int8"):
+            print(f"Warning: compute_type {self.compute_type!r} invalid, resetting to auto")
+            self.compute_type = "auto"
+            valid = False
+
+        if not (1 <= int(self.beam_size) <= 10):
+            print(f"Warning: beam_size {self.beam_size} out of range, resetting to 2")
+            self.beam_size = 2
             valid = False
 
         if not (8 <= self.font_size <= 72):

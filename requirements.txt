@@ -7,6 +7,10 @@ numpy>=1.21.0
 requests>=2.28.0
 tqdm>=4.64.0
 huggingface_hub>=0.15.0
+# Fast ASR engine (CTranslate2). Note: on GPU, CTranslate2 >= 4.5 needs the
+# cuDNN 9 DLLs, which the torch CUDA wheels already ship. If loading fails,
+# the app falls back to the transformers engine automatically.
+faster-whisper>=1.1.0
 pyinstaller>=5.0.0
 
 # Speaker Diarization (optional - only needed if using speaker separation)
