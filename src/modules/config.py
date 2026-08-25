@@ -111,10 +111,28 @@ class Config:
                 with open(self.config_file, 'r') as f:
                     loaded_config = json.load(f)
                     default_config.update(loaded_config)
+                    self._migrate_config(default_config, loaded_config)
             except Exception as e:
                 print(f"Error loading config: {e}")
 
         self.__dict__.update(default_config)
+
+    @staticmethod
+    def _migrate_config(config, loaded_config):
+        """Migrate pre-versioned configs in place. Only values still equal to
+        an old default are bumped to the new default; user-tuned values are
+        left untouched."""
+        if loaded_config.get("config_version"):
+            return
+        old_defaults_to_new = {
+            "dynamic_max_chunk_duration": (15.0, 8.0),
+            "dynamic_silence_timeout": (1.2, 0.9),
+        }
+        for key, (old_default, new_default) in old_defaults_to_new.items():
+            if config.get(key) == old_default:
+                print(f"Config migration: {key} {old_default} -> {new_default}")
+                config[key] = new_default
+        config["config_version"] = CONFIG_VERSION
 
     def save_config(self):
         """Save current configuration to file"""

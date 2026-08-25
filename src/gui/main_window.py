@@ -373,6 +373,7 @@ class ControlGUI:
         self.background_canvas = None
         self.background_rect = None
         self.last_subtitle = ""
+        self.last_subtitle_id = None
         self.last_speaker = None
         self.last_speaker_color = None
         self.subtitle_history = []
@@ -674,6 +675,54 @@ class ControlGUI:
             lbl = tk.Label(color_frame, text=f" {i+1} ", bg=color, fg="white", font=("Helvetica", 9, "bold"))
             lbl.pack(side="left", padx=2)
 
+        # Tab: Translation
+        translation_tab = tk.Frame(settings_notebook, padx=10, pady=10)
+        settings_notebook.add(translation_tab, text="Translation")
+
+        engine_frame = tk.LabelFrame(translation_tab, text="Translation Engine", padx=10, pady=10)
+        engine_frame.pack(pady=5, fill="x")
+
+        self.ENGINE_LABELS = {"whisper": "Whisper (local)",
+                              "fugumt": "FuguMT (local)",
+                              "deepl": "DeepL API"}
+        current_engine = self.config.translation_engine if self.config.translation_engine in self.ENGINE_LABELS else "whisper"
+        self.translation_engine_var = tk.StringVar(value=self.ENGINE_LABELS[current_engine])
+        tk.OptionMenu(engine_frame, self.translation_engine_var,
+                      *self.ENGINE_LABELS.values()).pack(anchor='w')
+
+        tk.Label(engine_frame, text="FuguMT and DeepL translate the Japanese transcript for more fluent\n"
+                                    "English. FuguMT: free, offline, downloads a small model on first use.\n"
+                                    "DeepL: best quality; new accounts get a one-time 1M character credit\n"
+                                    "(~50h of streams). Both fall back to Whisper if unavailable.",
+                 font=("Helvetica", 9), fg="gray", justify="left").pack(anchor='w', pady=(5, 0))
+
+        deepl_key_frame = tk.LabelFrame(translation_tab, text="DeepL API Key", padx=10, pady=10)
+        deepl_key_frame.pack(pady=5, fill="x")
+
+        deepl_key_row = tk.Frame(deepl_key_frame)
+        deepl_key_row.pack(fill='x', pady=5)
+
+        self.deepl_key_var = tk.StringVar(value=self.config.deepl_api_key or "")
+        self.deepl_key_entry = tk.Entry(deepl_key_row, textvariable=self.deepl_key_var, width=40, show="*")
+        self.deepl_key_entry.pack(side="left", padx=5, expand=True, fill='x')
+
+        self.show_deepl_key_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(deepl_key_row, text="Show", variable=self.show_deepl_key_var,
+                       command=self._toggle_deepl_key_visibility).pack(side="left", padx=5)
+
+        tk.Label(deepl_key_frame, text="Get a free key at: https://www.deepl.com/pro-api",
+                 font=("Helvetica", 8), fg="blue").pack(anchor='w')
+
+        hotwords_frame = tk.LabelFrame(translation_tab, text="Hotwords (per-streamer vocabulary)", padx=10, pady=10)
+        hotwords_frame.pack(pady=5, fill="x")
+
+        tk.Label(hotwords_frame, text="Names and terms to recognize correctly, comma-separated.\n"
+                                      "Example: Shirakami Fubuki, sukonbu, Kurokami",
+                 font=("Helvetica", 9), fg="gray", justify="left").pack(anchor='w')
+
+        self.hotwords_var = tk.StringVar(value=self.config.asr_hotwords or "")
+        tk.Entry(hotwords_frame, textvariable=self.hotwords_var, width=50).pack(fill='x', pady=5)
+
         # Tab 3: Appearance
         appearance_tab = tk.Frame(settings_notebook, padx=10, pady=10)
         settings_notebook.add(appearance_tab, text="Appearance")
@@ -767,6 +816,12 @@ class ControlGUI:
             self.hf_token_entry.config(show="")
         else:
             self.hf_token_entry.config(show="*")
+
+    def _toggle_deepl_key_visibility(self):
+        if self.show_deepl_key_var.get():
+            self.deepl_key_entry.config(show="")
+        else:
+            self.deepl_key_entry.config(show="*")
 
     def on_subtitle_position_change(self, position):
         if not self.subtitle_window or not self.subtitle_window.winfo_exists():
@@ -896,9 +951,13 @@ class ControlGUI:
                 msg_type, data = self.gui_queue.get_nowait()
                 if msg_type == "subtitle":
                     self.update_subtitle_text(data)
+                elif msg_type == "speaker_update":
+                    self.update_speaker_label(data)
                 elif msg_type == "model_loaded":
                     self.status_label.config(text="Status: Running", fg="green")
                     self.stop_button.config(state="normal")
+                elif msg_type == "status":
+                    self.status_label.config(text=f"Status: {data}", fg="orange")
                 elif msg_type == "diarization_status":
                     if data:
                         self.diarization_status_label.config(text="Speaker Diarization: ENABLED", fg="green")
@@ -1016,14 +1075,15 @@ class ControlGUI:
             return
 
         self.last_subtitle = text
+        self.last_subtitle_id = data.get('id') if isinstance(data, dict) else None
         self.last_speaker = speaker
         self.last_speaker_color = speaker_color
 
         try:
-            # Check if we have speaker diarization enabled and should show multi-line
+            # Multi-line mode whenever diarization is on; speaker labels are
+            # attached asynchronously later via "speaker_update" messages.
             use_multiline = (self.diarization_enabled and
-                           self.config.use_speaker_diarization and
-                           speaker is not None)
+                           self.config.use_speaker_diarization)
 
             if use_multiline:
                 # Switch to multi-line mode
@@ -1032,6 +1092,7 @@ class ControlGUI:
 
                 # Add new line to subtitle_lines
                 new_line = {
+                    'id': self.last_subtitle_id,
                     'text': text,
                     'speaker': speaker,
                     'color': speaker_color or self.config.subtitle_font_color
@@ -1081,6 +1142,38 @@ class ControlGUI:
 
         self._update_background_size()
         self._resize_window_if_needed()
+
+    def update_speaker_label(self, data):
+        """Attach a speaker label from the async diarization worker to an
+        already-displayed subtitle, matched by subtitle id. Silently ignores
+        subtitles that have already scrolled away."""
+        subtitle_id = data.get('id')
+        speaker = data.get('speaker')
+        speaker_color = data.get('speaker_color')
+        if subtitle_id is None or not speaker:
+            return
+
+        try:
+            if self.is_multiline_mode:
+                updated = False
+                for line in self.subtitle_lines:
+                    if line.get('id') == subtitle_id:
+                        line['speaker'] = speaker
+                        line['color'] = speaker_color or self.config.subtitle_font_color
+                        updated = True
+                if updated:
+                    self._update_multiline_subtitle()
+                    self._update_background_size()
+            elif subtitle_id == self.last_subtitle_id:
+                self.last_speaker = speaker
+                self.last_speaker_color = speaker_color
+                if (self.config.show_speaker_colors and self.speaker_label
+                        and self.subtitle_visible):
+                    self.speaker_label.config(text=speaker, fg=speaker_color or "#FFFFFF",
+                                              bg=self.config.subtitle_bg_color)
+                    self.speaker_label.place(relx=0.5, rely=0.3, anchor="center")
+        except tk.TclError:
+            pass
 
     def _switch_to_multiline_mode(self):
         """Switch from single-line to multi-line subtitle display"""
@@ -1379,6 +1472,15 @@ class ControlGUI:
             if hf_token:
                 self.config.hf_token = hf_token
 
+            # Translation settings
+            engine_label = self.translation_engine_var.get()
+            self.config.translation_engine = next(
+                (key for key, label in self.ENGINE_LABELS.items() if label == engine_label),
+                "whisper")
+            deepl_key = self.deepl_key_var.get().strip()
+            self.config.deepl_api_key = deepl_key or None
+            self.config.asr_hotwords = self.hotwords_var.get().strip()
+
             if save_to_disk:
                 self.config.save_config()
             return True
@@ -1403,7 +1505,10 @@ class ControlGUI:
 
         self.create_subtitle_window()
         self.stop_event = threading.Event()
-        audio_queue = Queue(maxsize=20)
+        # Small queue keeps subtitles from lagging far behind live audio when
+        # processing can't keep up; the recorder drops the oldest chunk on
+        # overflow rather than blocking.
+        audio_queue = Queue(maxsize=8)
 
         selected_device_name = self.get_selected_device_name()
         if selected_device_name is None:

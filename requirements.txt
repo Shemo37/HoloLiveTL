@@ -1,5 +1,5 @@
-torch>=2.0.0
-torchaudio>=2.0.0
+torch>=2.4.0
+torchaudio>=2.4.0
 transformers>=4.30.0
 soundcard>=0.4.2
 scipy>=1.9.0
@@ -12,6 +12,17 @@ huggingface_hub>=0.15.0
 # the app falls back to the transformers engine automatically.
 faster-whisper>=1.1.0
 pyinstaller>=5.0.0
+
+# Fast ASR backend (CTranslate2). Falls back to transformers if unavailable.
+faster-whisper>=1.1.0
+ctranslate2>=4.5.0
+# Windows GPU note: ctranslate2 needs cuBLAS/cuDNN 9 for CUDA 12. torch>=2.4
+# Windows wheels bundle these in torch/lib; otherwise install:
+#   pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+
+# FuguMT local translation engine (MarianMT tokenizer needs sentencepiece)
+sentencepiece>=0.1.99
+sacremoses>=0.0.53
 
 # Speaker Diarization (optional - only needed if using speaker separation)
 pyannote.audio>=3.1.0

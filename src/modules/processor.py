@@ -1,8 +1,8 @@
 """
 Audio processor module with speaker diarization support
 """
-import os
 import time
+import threading
 import numpy as np
 import torch
 import string
@@ -17,13 +17,27 @@ from .config import SAMPLE_RATE, MODEL_ID
 logger = logging.getLogger(__name__)
 
 
+def resolve_pipeline(config, translator):
+    """Decide the ASR task/target and whether a text translator runs after it.
+
+    With a text translator active, ASR transcribes Japanese and the translator
+    produces the English; otherwise Whisper's built-in translate task is used.
+    """
+    if config.output_mode == "translate":
+        if translator is not None:
+            return "transcribe", "ja", True
+        return "translate", "en", False
+    return "transcribe", config.language_code, False
+
+
 def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
-    """Main processor thread with optional speaker diarization"""
+    """Main processor thread. Emits subtitles immediately after ASR; speaker
+    diarization (if enabled) runs in a separate worker and attaches labels
+    afterwards via "speaker_update" messages."""
     print("Processing thread started.")
 
-    # Speaker diarization components
-    diarizer = None
-    use_diarization = getattr(config, 'use_speaker_diarization', False)
+    diar_queue = None
+    diar_thread = None
 
     try:
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -106,14 +120,23 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
             print("Speaker diarization: ENABLED")
             gui_queue.put(("diarization_status", True))
         else:
-            print("Speaker diarization: DISABLED")
             gui_queue.put(("diarization_status", False))
+
+        backend = create_backend(config, device, gui_queue)
+
+        text_translator = create_translator(config)
+        task, target_lang, use_text_translator = resolve_pipeline(config, text_translator)
+        print(f"ASR backend: {backend.name}, task: '{task}', target language: '{target_lang}'"
+              + (", translation: DeepL" if use_text_translator else ""))
 
         gui_queue.put(("model_loaded", None))
 
         translator = str.maketrans('', '', string.punctuation)
-        last_valid_translation = ""
         translation_history = []
+        min_confidence = getattr(config, 'min_confidence', 0.30)
+        glossary = getattr(config, 'glossary', {}) or {}
+        source_context = deque(maxlen=2)  # recent JA lines, sent to DeepL as context
+        subtitle_id = 0
 
         while not stop_event.is_set():
             start_time = time.time()
@@ -152,20 +175,6 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                     stats.add_chunk(time.time() - start_time, False, False)
                     continue
 
-                # Perform speaker diarization if enabled
-                speaker_label = None
-                speaker_color = None
-
-                if use_diarization and diarizer is not None:
-                    try:
-                        speaker_label, speaker_color = diarizer.get_simple_speaker(
-                            audio_data, SAMPLE_RATE
-                        )
-                        if speaker_label:
-                            logger.debug(f"Detected speaker: {speaker_label}")
-                    except Exception as e:
-                        logger.warning(f"Diarization error: {e}")
-
                 # Run ASR/translation
                 result = backend.transcribe(audio_data)
                 processed_text = result.text.strip()
@@ -190,12 +199,13 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                     was_hallucination = is_hallucination_result
 
                     if not is_hallucination_result:
-                        processed_text = post_process_translation(processed_text)
+                        processed_text = apply_glossary(post_process_translation(processed_text), glossary)
                         translation_history.append(processed_text)
                         if len(translation_history) > 10:
                             translation_history.pop(0)
 
-                        last_valid_translation = processed_text
+                        subtitle_id += 1
+                        print(f"Translation: {processed_text} (confidence: {confidence_score:.2f})")
 
                         subtitle_text = processed_text
                         if dual_output:
@@ -230,15 +240,20 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                             "speaker_color": speaker_color,
                             "confidence": confidence_score
                         }))
+
+                        if diar_queue is not None:
+                            try:
+                                diar_queue.put_nowait((subtitle_id, audio_data.copy(), time.time()))
+                            except Full:
+                                logger.debug("Diarization queue full; skipping speaker detection for this chunk")
                     else:
                         print(f"Filtered hallucination: '{processed_text}' (confidence: {confidence_score:.2f})")
 
                 stats.add_chunk(time.time() - start_time, had_translation, was_hallucination, confidence_score)
 
             except Exception as e:
-                if "timeout" not in str(e).lower():
-                    print(f"Processor error: {e}")
-                    traceback.print_exc()
+                print(f"Processor error: {e}")
+                traceback.print_exc()
                 stats.add_chunk(time.time() - start_time, False, False)
 
     except Exception as e:
