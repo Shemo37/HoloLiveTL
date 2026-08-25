@@ -142,28 +142,32 @@ def get_file_hash(filepath):
     return hash_sha256.hexdigest()
 
 def get_kotoba_generate_kwargs(task="translate", target_language="en"):
-    """Get appropriate generate_kwargs for kotoba-whisper-bilingual"""
+    """Get appropriate generate_kwargs for kotoba-whisper-bilingual.
+
+    NOTE: for this model the language token selects the OUTPUT language.
+    Japanese audio -> English text is language="en", task="translate";
+    Japanese audio -> Japanese text is language="ja", task="transcribe".
+
+    Deliberately minimal: greedy decoding, and the model's own tuned
+    generation_config supplies the non-speech suppress list. Do NOT pass
+    suppress_tokens=[-1] here - in HF transformers that replaces the tuned
+    list with the literal token index -1 (unlike faster-whisper, where
+    [-1] is a sentinel meaning "use the default list").
+    """
     return {
         "language": target_language,
         "task": task,
-        "temperature": 0.08,
         "max_new_tokens": 224,
         "no_repeat_ngram_size": 3,
-        "suppress_tokens": [-1],
     }
 
 def get_kotoba_pipeline_kwargs():
-    """Pipeline-level configuration for kotoba-whisper"""
-    return {
-        "chunk_length_s": 15,
-        "batch_size": 16,
-        "return_timestamps": True,
-    }
+    """Pipeline-level configuration for kotoba-whisper.
 
-def optimize_for_vtuber_content(generate_kwargs):
-    """Apply VTuber-specific optimizations to generate_kwargs"""
-    # Greedy decoding for deterministic output. no_repeat_ngram_size stays at
-    # the base value of 3: forcing it to 1 forbade ANY token from repeating,
-    # which mangled legitimate output like "no no no" or repeated particles.
-    generate_kwargs["temperature"] = 0.0
-    return generate_kwargs
+    The recorder already emits complete utterances (<= dynamic_max_chunk_duration),
+    so no chunked long-form decoding, no batching, and no timestamp tokens are
+    needed - all three only added latency for single short utterances.
+    """
+    return {
+        "return_timestamps": False,
+    }

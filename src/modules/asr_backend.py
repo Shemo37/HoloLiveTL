@@ -1,18 +1,25 @@
 """
 ASR backend abstraction.
 
-Primary backend is faster-whisper (CTranslate2) running the official
-kotoba-whisper-bilingual conversion. If faster-whisper is unavailable or
-fails to load (missing package, cuDNN DLLs, download failure), we fall
-back to the original HuggingFace Transformers pipeline so the app keeps
-working, just slower.
+One small interface (AsrBackend.transcribe) with two implementations:
+
+  * FasterWhisperBackend  -- CTranslate2 via the faster-whisper package (fast path)
+  * TransformersBackend   -- the existing HuggingFace transformers pipeline (fallback)
+
+load_backend() prefers faster-whisper when the package is installed and the
+pre-converted CTranslate2 model can be loaded; otherwise it falls back to the
+transformers pipeline with a clear console message (the #1 failure mode on
+Windows is missing cuDNN 9 DLLs for CTranslate2).
+
+Both backends accept mono float32 PCM at 16 kHz and return an AsrResult.
+Heavy imports (torch, transformers, faster_whisper) happen inside the classes
+so importing this module stays cheap and the fallback works when faster-whisper
+is not installed.
 """
-import os
-import sys
-import math
+import inspect
 import logging
-import traceback
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 import numpy as np
@@ -23,187 +30,215 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ASRSegment:
-    """One decoded segment. Probability fields are None on the transformers fallback."""
-    text: str
+class AsrSegment:
     start: float
     end: float
+    text: str
     avg_logprob: Optional[float] = None
     no_speech_prob: Optional[float] = None
     compression_ratio: Optional[float] = None
 
 
 @dataclass
-class ASRResult:
+class AsrResult:
     text: str
-    segments: List[ASRSegment]
+    confidence: float
+    segments: List[AsrSegment] = field(default_factory=list)
+    # Real decoder statistics; None on backends that can't provide them.
+    avg_logprob: Optional[float] = None
+    no_speech_prob: Optional[float] = None
+    compression_ratio: Optional[float] = None
+    backend: str = ""
 
 
-def drop_no_speech_segments(segments):
-    """First-line hallucination defense: drop segments the model itself
-    flags as probable non-speech decoded with very low confidence."""
-    kept = []
-    for seg in segments:
-        if (seg.no_speech_prob is not None and seg.avg_logprob is not None
-                and seg.no_speech_prob > 0.85 and seg.avg_logprob < -1.0):
-            logger.debug(f"Dropped no-speech segment: '{seg.text}' "
-                         f"(no_speech={seg.no_speech_prob:.2f}, logprob={seg.avg_logprob:.2f})")
-            continue
-        kept.append(seg)
+def _prepare_audio(audio: np.ndarray) -> np.ndarray:
+    """Both backends want a flat float32 array at 16 kHz."""
+    return np.asarray(audio, dtype=np.float32).flatten()
+
+
+def _filter_kwargs(func, kwargs):
+    """Drop kwargs the installed version of `func` does not accept.
+
+    faster-whisper adds/renames transcribe() options between releases, so
+    introspect the live signature instead of guessing.
+    """
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return dict(kwargs)
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(kwargs)
+    kept = {k: v for k, v in kwargs.items() if k in params}
+    dropped = sorted(set(kwargs) - set(kept))
+    if dropped:
+        logger.warning("faster-whisper ignores unsupported options: %s", ", ".join(dropped))
     return kept
 
 
-def _heuristic_confidence(text):
-    """Word-count heuristic used when the backend provides no probabilities."""
-    word_count = len(text.split())
-    if word_count >= 3:
-        return 0.85
-    if word_count >= 1:
-        return 0.75
-    return 0.6
+class AsrBackend:
+    """Minimal interface the processor thread depends on."""
 
+    name = "base"
 
-def confidence_from_segments(segments, text=""):
-    """Duration-weighted confidence from real model probabilities:
-    exp(avg_logprob) scaled by (1 - no_speech_prob), clamped to [0, 1].
-    Falls back to a word-count heuristic when probabilities are absent."""
-    scored = [s for s in segments if s.avg_logprob is not None]
-    if not scored:
-        return _heuristic_confidence(text)
+    def transcribe(self, audio: np.ndarray, task=None, language=None) -> AsrResult:
+        """audio: mono float32 numpy array sampled at SAMPLE_RATE (16 kHz).
 
-    total_duration = 0.0
-    weighted_sum = 0.0
-    for seg in scored:
-        duration = max(seg.end - seg.start, 0.1)
-        seg_conf = math.exp(min(seg.avg_logprob, 0.0)) * (1.0 - (seg.no_speech_prob or 0.0))
-        weighted_sum += seg_conf * duration
-        total_duration += duration
+        task/language override the defaults for this one call (used by dual
+        JP+EN subtitle mode to run a second decode on the same chunk)."""
+        raise NotImplementedError
 
-    return max(0.0, min(1.0, weighted_sum / total_duration))
+    def warm_up(self):
+        """Run a throwaway decode so the first real utterance is fast."""
+        try:
+            self.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32))
+        except Exception as e:
+            logger.warning("warm-up decode failed (non-fatal): %s", e)
 
-
-def _setup_cuda_dlls():
-    """Help ctranslate2 find cuBLAS/cuDNN DLLs on Windows.
-
-    torch>=2.4 Windows wheels bundle cuDNN 9 in torch/lib; the pip packages
-    nvidia-cublas-cu12 / nvidia-cudnn-cu12 install DLLs under
-    site-packages/nvidia/*/bin. Neither location is on the DLL search path
-    by default. No-op on other platforms.
-    """
-    if sys.platform != "win32":
-        return
-    dll_dirs = []
-    try:
-        import torch
-        dll_dirs.append(os.path.join(os.path.dirname(torch.__file__), "lib"))
-    except ImportError:
+    def close(self):
         pass
-    for path in sys.path:
-        nvidia_dir = os.path.join(path, "nvidia")
-        if os.path.isdir(nvidia_dir):
-            for pkg in ("cublas", "cudnn"):
-                bin_dir = os.path.join(nvidia_dir, pkg, "bin")
-                if os.path.isdir(bin_dir):
-                    dll_dirs.append(bin_dir)
-    for dll_dir in dll_dirs:
-        if os.path.isdir(dll_dir):
-            try:
-                os.add_dll_directory(dll_dir)
-            except (OSError, AttributeError):
-                pass
 
 
-class FasterWhisperBackend:
-    """kotoba-whisper-bilingual via faster-whisper / CTranslate2."""
+class FasterWhisperBackend(AsrBackend):
+    """CTranslate2 inference through faster-whisper."""
 
     name = "faster-whisper"
 
-    def __init__(self, config, device):
-        self.config = config
-        self.device = "cuda" if device.startswith("cuda") else "cpu"
-        self.model = None
-
-    def load(self):
-        _setup_cuda_dlls()
+    def __init__(self, config, task="translate", language="en", device="auto"):
+        # ImportError / model-load errors are caught by load_backend -> fallback.
         from faster_whisper import WhisperModel
 
-        compute_type = "float16" if self.device == "cuda" else "int8"
-        download_root = os.path.join(self.config.model_cache_dir, "faster_whisper")
-        os.makedirs(download_root, exist_ok=True)
+        device = str(device)
+        device_index = 0
+        if ":" in device:                     # "cuda:0" -> ("cuda", 0)
+            device, idx = device.split(":", 1)
+            device_index = int(idx)
 
-        print(f"Loading faster-whisper model '{FASTER_MODEL_ID}' "
-              f"({self.device}, {compute_type})...")
+        compute_type = getattr(config, 'compute_type', 'auto') or 'auto'
+        if compute_type == 'auto':
+            compute_type = 'float16' if device == 'cuda' else 'int8'
+
+        self.task = task
+        self.language = language
+        self.compute_type = compute_type
+
         self.model = WhisperModel(
             FASTER_MODEL_ID,
-            device=self.device,
+            device=device,
+            device_index=device_index,
             compute_type=compute_type,
-            download_root=download_root,
-        )
-        print("faster-whisper model loaded.")
-
-    def transcribe(self, audio, task, target_lang):
-        # For kotoba-whisper-bilingual, `language` selects the TARGET language
-        # ("en" + task="translate" = JA speech -> EN text), same convention as
-        # the transformers path.
-        use_internal_vad = not self.config.use_dynamic_chunking
-        segments_gen, info = self.model.transcribe(
-            audio.astype(np.float32),
-            language=target_lang,
-            task=task,
-            beam_size=getattr(self.config, "asr_beam_size", 5),
-            temperature=[0.0, 0.2, 0.4],
-            condition_on_previous_text=False,
-            compression_ratio_threshold=2.4,
-            log_prob_threshold=-1.0,
-            no_speech_threshold=0.6,
-            repetition_penalty=1.1,
-            vad_filter=use_internal_vad,
-            vad_parameters={"min_silence_duration_ms": 500} if use_internal_vad else None,
-            # Bias decoding toward per-streamer vocabulary (names, game terms)
-            hotwords=getattr(self.config, "asr_hotwords", "") or None,
+            download_root=config.model_cache_dir,
         )
 
-        segments = [
-            ASRSegment(
-                text=seg.text,
-                start=seg.start,
-                end=seg.end,
-                avg_logprob=seg.avg_logprob,
-                no_speech_prob=seg.no_speech_prob,
-                compression_ratio=seg.compression_ratio,
-            )
-            for seg in segments_gen  # inference happens while consuming the generator
-        ]
-        segments = drop_no_speech_segments(segments)
-        text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
-        return ASRResult(text=text, segments=segments)
+        options = {
+            "task": task,
+            "language": language,
+            "beam_size": int(getattr(config, 'beam_size', 2) or 2),
+            # Each queue item is an independent VAD-cut utterance; carrying
+            # decoder context across them propagates hallucinations.
+            "condition_on_previous_text": False,
+            # Greedy first; re-decode hotter only when the output fails the
+            # compression-ratio / logprob checks (Whisper's anti-repetition
+            # fallback, which the transformers pipeline path lacked).
+            "temperature": [0.0, 0.2, 0.4],
+            "compression_ratio_threshold": 2.4,
+            "log_prob_threshold": -1.0,
+            "no_speech_threshold": 0.6,
+            # In faster-whisper, [-1] EXPANDS to the model's non-speech token
+            # list (unlike HF transformers, where it means literal index -1).
+            "suppress_tokens": [-1],
+            "without_timestamps": True,
+            "vad_filter": False,   # the recorder already VAD-gates chunks
+        }
+        self.options = _filter_kwargs(self.model.transcribe, options)
+        logger.info("faster-whisper loaded (device=%s, compute_type=%s)", device, compute_type)
+
+    def transcribe(self, audio: np.ndarray, task=None, language=None) -> AsrResult:
+        audio = _prepare_audio(audio)
+
+        options = self.options
+        if task is not None or language is not None:
+            options = dict(options)
+            if task is not None and "task" in self.options:
+                options["task"] = task
+            if language is not None and "language" in self.options:
+                options["language"] = language
+
+        # transcribe() returns a lazy generator; decoding happens on iteration.
+        seg_iter, _info = self.model.transcribe(audio, **options)
+
+        segments = []
+        for seg in seg_iter:
+            segments.append(AsrSegment(
+                start=float(seg.start or 0.0),
+                end=float(seg.end or 0.0),
+                text=(seg.text or "").strip(),
+                avg_logprob=getattr(seg, 'avg_logprob', None),
+                no_speech_prob=getattr(seg, 'no_speech_prob', None),
+                compression_ratio=getattr(seg, 'compression_ratio', None),
+            ))
+
+        text = " ".join(s.text for s in segments if s.text).strip()
+        avg_lp, no_speech, comp_ratio = self._aggregate(segments)
+        return AsrResult(
+            text=text,
+            confidence=self._confidence(avg_lp, no_speech),
+            segments=segments,
+            avg_logprob=avg_lp,
+            no_speech_prob=no_speech,
+            compression_ratio=comp_ratio,
+            backend=self.name,
+        )
+
+    @staticmethod
+    def _aggregate(segments):
+        """Duration-weighted avg_logprob, max no_speech_prob, max compression_ratio."""
+        num = den = 0.0
+        no_speech = comp = None
+        for s in segments:
+            if s.avg_logprob is not None:
+                dur = max(0.1, s.end - s.start)
+                num += s.avg_logprob * dur
+                den += dur
+            if s.no_speech_prob is not None:
+                no_speech = s.no_speech_prob if no_speech is None else max(no_speech, s.no_speech_prob)
+            if s.compression_ratio is not None:
+                comp = s.compression_ratio if comp is None else max(comp, s.compression_ratio)
+        avg_lp = (num / den) if den else None
+        return avg_lp, no_speech, comp
+
+    @staticmethod
+    def _confidence(avg_logprob, no_speech_prob):
+        """exp(avg token logprob), discounted by speech probability — a real
+        model confidence, replacing the old timestamp-length heuristic."""
+        if avg_logprob is None:
+            return 0.0
+        conf = math.exp(max(min(avg_logprob, 0.0), -10.0))
+        if no_speech_prob is not None:
+            conf *= (1.0 - min(max(no_speech_prob, 0.0), 1.0))
+        return min(max(conf, 0.0), 1.0)
+
+    def close(self):
+        self.model = None
 
 
-class TransformersBackend:
-    """Original HuggingFace pipeline, kept as an automatic fallback."""
+class TransformersBackend(AsrBackend):
+    """The pre-migration path: HF transformers ASR pipeline. Kept as fallback."""
 
     name = "transformers"
 
-    def __init__(self, config, device):
-        self.config = config
-        self.device = device
-        self.pipe = None
-
-    def load(self):
+    def __init__(self, model_dir, task="translate", language="en", device="cpu"):
         import torch
         from transformers import pipeline, AutoModelForSpeechSeq2Seq, AutoProcessor
-        from .model_utils import ensure_model_downloaded, get_kotoba_pipeline_kwargs
+        from .model_utils import get_kotoba_generate_kwargs, get_kotoba_pipeline_kwargs
 
-        model_dir, _ = ensure_model_downloaded(MODEL_ID, self.config.model_cache_dir)
-        model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        torch_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
         try:
             model = AutoModelForSpeechSeq2Seq.from_pretrained(
                 model_dir,
-                torch_dtype=model_dtype,
+                torch_dtype=torch_dtype,
                 low_cpu_mem_usage=True,
                 use_safetensors=True,
-                attn_implementation="sdpa",
             )
             processor = AutoProcessor.from_pretrained(model_dir)
             self.pipe = pipeline(
@@ -211,62 +246,83 @@ class TransformersBackend:
                 model=model,
                 tokenizer=processor.tokenizer,
                 feature_extractor=processor.feature_extractor,
-                torch_dtype=model_dtype,
-                device=self.device,
-                **get_kotoba_pipeline_kwargs()
+                torch_dtype=torch_dtype,
+                device=device,
+                **get_kotoba_pipeline_kwargs(),
             )
-            print("Transformers model loaded from cache.")
+            print("Model loaded successfully from cache.")
         except Exception as e:
             print(f"Failed to load model from cache: {e}")
             print("Attempting to download model directly from Hugging Face...")
             self.pipe = pipeline(
                 "automatic-speech-recognition",
                 model=MODEL_ID,
-                torch_dtype=model_dtype,
-                device=self.device,
-                model_kwargs={"attn_implementation": "sdpa"},
-                **get_kotoba_pipeline_kwargs()
+                torch_dtype=torch_dtype,
+                device=device,
+                model_kwargs=({"attn_implementation": "sdpa"}
+                              if torch.cuda.is_available() else {}),
+                **get_kotoba_pipeline_kwargs(),
             )
-            print("Transformers model loaded from Hugging Face.")
+            print("Model loaded successfully from Hugging Face.")
 
-    def transcribe(self, audio, task, target_lang):
-        from .model_utils import get_kotoba_generate_kwargs, optimize_for_vtuber_content
+        self._make_generate_kwargs = get_kotoba_generate_kwargs
+        self._kwargs_cache = {(task, language): get_kotoba_generate_kwargs(task, language)}
 
-        generate_kwargs = optimize_for_vtuber_content(
-            get_kotoba_generate_kwargs(task, target_lang))
-        result = self.pipe({"sampling_rate": SAMPLE_RATE, "raw": audio.astype(np.float32)},
+    def transcribe(self, audio: np.ndarray, task=None, language=None) -> AsrResult:
+        audio = _prepare_audio(audio)
+        key = (task or self.task, language or self.language)
+        generate_kwargs = self._kwargs_cache.get(key)
+        if generate_kwargs is None:
+            generate_kwargs = self._make_generate_kwargs(*key)
+            self._kwargs_cache[key] = generate_kwargs
+        result = self.pipe({"sampling_rate": SAMPLE_RATE, "raw": audio},
                            generate_kwargs=generate_kwargs)
+        text = (result.get("text") or "").strip()
 
-        segments = []
-        for chunk in result.get("chunks") or []:
-            timestamp = chunk.get("timestamp")
-            if isinstance(timestamp, (list, tuple)) and len(timestamp) == 2:
-                start = timestamp[0] or 0.0
-                end = timestamp[1] if timestamp[1] is not None else start + 1.0
-            else:
-                start, end = 0.0, 1.0
-            segments.append(ASRSegment(text=chunk.get("text", ""), start=start, end=end))
+        # No decoder log-probs through the pipeline API: word-count heuristic,
+        # flagged as such by avg_logprob=None so filtering no-ops on it.
+        words = len(text.split())
+        if words >= 3:
+            conf = 0.85
+        elif words >= 1:
+            conf = 0.75
+        else:
+            conf = 0.0
 
-        return ASRResult(text=result["text"].strip(), segments=segments)
+        duration = len(audio) / float(SAMPLE_RATE)
+        return AsrResult(
+            text=text,
+            confidence=conf,
+            segments=[AsrSegment(start=0.0, end=duration, text=text)],
+            backend=self.name,
+        )
+
+    def close(self):
+        self.pipe = None
 
 
-def create_backend(config, device, gui_queue=None):
-    """Create the configured ASR backend, falling back to transformers if
-    faster-whisper cannot be used."""
-    requested = getattr(config, "asr_backend", "faster-whisper")
+def load_backend(config, device, model_dir, task, language) -> AsrBackend:
+    """
+    Build the best available backend.
 
-    if requested != "transformers":
+    config.asr_backend:
+        "faster_whisper" (default) -> try faster-whisper, fall back to transformers
+        "transformers"             -> the original pipeline path
+    """
+    preference = getattr(config, 'asr_backend', 'faster_whisper')
+
+    if preference != 'transformers':
         try:
-            backend = FasterWhisperBackend(config, device)
-            backend.load()
+            backend = FasterWhisperBackend(config, task=task, language=language, device=device)
+            print(f"ASR engine: faster-whisper ({backend.compute_type})")
             return backend
         except Exception as e:
-            print(f"faster-whisper backend unavailable ({e}); "
-                  f"falling back to transformers pipeline.")
-            traceback.print_exc()
-            if gui_queue is not None:
-                gui_queue.put(("status", "faster-whisper unavailable - using slower fallback"))
+            logger.warning("faster-whisper unavailable: %s", e)
+            print(f"faster-whisper unavailable ({e}).")
+            print("Falling back to the transformers engine. If this is unexpected,")
+            print("check that 'pip install faster-whisper' succeeded and (on GPU)")
+            print("that cuDNN 9 is available.")
 
-    backend = TransformersBackend(config, device)
-    backend.load()
+    backend = TransformersBackend(model_dir, task=task, language=language, device=device)
+    print("ASR engine: transformers")
     return backend

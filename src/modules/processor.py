@@ -8,13 +8,11 @@ import torch
 import string
 import traceback
 import logging
-from queue import Queue, Full, Empty
-from collections import deque
 from .audio_utils import enhance_audio_quality
-from .asr_backend import create_backend, confidence_from_segments
-from .translator import create_translator, apply_glossary, TranslatorUnavailable
-from .filters import post_process_translation, is_hallucination
-from .config import SAMPLE_RATE
+from .model_utils import ensure_model_downloaded
+from .asr_backend import load_backend
+from .filters import post_process_translation, is_hallucination, is_low_confidence
+from .config import SAMPLE_RATE, MODEL_ID
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +43,82 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
         print(f"Using device: {device.upper()}")
 
-        # Start async diarization worker (never blocks subtitle output)
-        if getattr(config, 'use_speaker_diarization', False):
-            from .diarization_worker import diarization_worker
-            diar_queue = Queue(maxsize=3)
-            diar_thread = threading.Thread(
-                target=diarization_worker,
-                args=(stop_event, diar_queue, config, gui_queue, device),
-                daemon=True,
-            )
-            diar_thread.start()
+        # Ensure models are downloaded
+        model_dir, vad_dir = ensure_model_downloaded(MODEL_ID, config.model_cache_dir)
+
+        vad_model = None
+
+        if not config.use_dynamic_chunking and config.use_vad_filter:
+            try:
+                print("Loading Silero VAD model...")
+                torch.set_num_threads(1)
+                vad_path = os.path.join(vad_dir, "silero_vad.jit")
+                vad_model = torch.jit.load(vad_path, map_location='cpu')
+                print("VAD model loaded successfully.")
+            except Exception as e:
+                print(f"Could not load VAD model: {e}. Disabling VAD filter.")
+                config.use_vad_filter = False
+
+        # Initialize speaker diarization if enabled
+        if use_diarization:
+            print("Initializing speaker diarization...")
+            try:
+                from .diarization import SpeakerDiarizer
+
+                hf_token = getattr(config, 'hf_token', None) or os.environ.get('HF_TOKEN')
+
+                if not hf_token:
+                    print("WARNING: No HuggingFace token found for speaker diarization")
+                    print("Set HF_TOKEN environment variable or configure in settings")
+                    print("Get token at: https://huggingface.co/settings/tokens")
+                    use_diarization = False
+                else:
+                    diarizer = SpeakerDiarizer(
+                        hf_token=hf_token,
+                        device=device.split(':')[0],  # 'cuda' or 'cpu'
+                        min_speakers=getattr(config, 'min_speakers', 1),
+                        max_speakers=getattr(config, 'max_speakers', 5)
+                    )
+
+                    # Pre-load the model
+                    if diarizer.load_model():
+                        print("Speaker diarization model loaded successfully.")
+                    else:
+                        print("Failed to load speaker diarization model. Disabling.")
+                        use_diarization = False
+                        diarizer = None
+
+            except ImportError:
+                print("pyannote.audio not installed. Run: pip install pyannote.audio")
+                print("Speaker diarization disabled.")
+                use_diarization = False
+            except Exception as e:
+                print(f"Failed to initialize speaker diarization: {e}")
+                use_diarization = False
+
+        source_lang = getattr(config, 'source_language_code', 'ja')
+        # "both" shows the JP transcription above the EN translation; the
+        # primary decode is the translation, the JP line is a second decode.
+        dual_output = config.output_mode == "both"
+        task = "transcribe" if config.output_mode == "transcribe" else "translate"
+        # The language token is the OUTPUT language for this model. Transcribe
+        # mode must request Japanese ("ja"), never config.language_code, whose
+        # default "en" is the subtitle display language.
+        target_lang = "en" if task == "translate" else source_lang
+        mode_desc = "dual JP+EN" if dual_output else f"'{task}' targeting '{target_lang}'"
+        print(f"Setting model task to: {mode_desc} for Japanese audio.")
+
+        print("Loading ASR model...")
+        backend = load_backend(config, device=device, model_dir=model_dir,
+                               task=task, language=target_lang)
+        # Throwaway decode so the first real utterance doesn't pay CUDA init
+        backend.warm_up()
+        print("ASR Model loaded successfully.")
+
+        # Notify GUI about diarization status
+        if use_diarization:
+            print("Speaker diarization: ENABLED")
+            gui_queue.put(("diarization_status", True))
         else:
             gui_queue.put(("diarization_status", False))
 
@@ -78,20 +142,31 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
             start_time = time.time()
             had_translation, was_hallucination = False, False
             try:
-                try:
-                    audio_chunk_np = audio_queue.get(timeout=1)
-                except Empty:
-                    continue
-
-                audio_chunk_np = enhance_audio_quality(audio_chunk_np.flatten(), sample_rate=SAMPLE_RATE)
+                audio_chunk_np = audio_queue.get(timeout=1)
+                raw_audio = audio_chunk_np.flatten()
 
                 if not config.use_dynamic_chunking:
-                    # Fixed mode: cheap RMS gate; finer speech gating is done
-                    # by the backend's built-in VAD filter.
-                    rms = np.sqrt(np.mean(audio_chunk_np ** 2))
+                    # Gate on the RAW signal BEFORE enhancement: normalization
+                    # would otherwise boost silence past the threshold and make
+                    # this check dead code.
+                    rms = np.sqrt(np.mean(raw_audio ** 2))
                     if rms < config.volume_threshold:
                         stats.add_chunk(time.time() - start_time, False, False)
                         continue
+
+                    if config.use_vad_filter and vad_model is not None:
+                        audio_tensor = torch.from_numpy(raw_audio).float()
+                        if len(audio_tensor) < 512:
+                            audio_tensor = torch.nn.functional.pad(audio_tensor, (0, 512 - len(audio_tensor)))
+                        speech_prob = vad_model(audio_tensor, SAMPLE_RATE).item()
+                        if speech_prob < config.vad_threshold:
+                            stats.add_chunk(time.time() - start_time, False, False)
+                            continue
+
+                if getattr(config, 'enhance_audio', True):
+                    audio_chunk_np = enhance_audio_quality(raw_audio, sample_rate=SAMPLE_RATE)
+                else:
+                    audio_chunk_np = raw_audio
 
                 audio_data = audio_chunk_np.flatten().astype(np.float32)
                 min_samples = int(SAMPLE_RATE * 1.0)
@@ -101,46 +176,24 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                     continue
 
                 # Run ASR/translation
-                result = backend.transcribe(audio_data, task, target_lang)
+                result = backend.transcribe(audio_data)
                 processed_text = result.text.strip()
 
-                confidence_score = confidence_from_segments(result.segments, processed_text)
+                confidence_score = result.confidence
+                logger.debug(f"ASR ({result.backend}): {len(result.segments)} segments, "
+                             f"confidence {confidence_score:.2f}")
 
                 had_translation = bool(processed_text)
                 is_hallucination_result = False
 
                 if processed_text:
-                    if confidence_score < min_confidence:
-                        print(f"Filtered low-confidence output: '{processed_text}' "
-                              f"(confidence: {confidence_score:.2f} < {min_confidence:.2f})")
-                        stats.add_chunk(time.time() - start_time, had_translation, True, confidence_score)
+                    # Decoder-statistics gate first (real signal, cheap), then
+                    # the string filters for phrases that score fine on logprob
+                    low_conf, reason = is_low_confidence(result)
+                    if low_conf:
+                        print(f"Filtered low-confidence output: '{processed_text}' ({reason})")
+                        stats.add_chunk(time.time() - start_time, True, True, confidence_score)
                         continue
-
-                    if use_text_translator:
-                        source_text = processed_text
-                        try:
-                            translated = text_translator.translate(
-                                source_text, context=" ".join(source_context) or None)
-                        except TranslatorUnavailable as e:
-                            # Abandon DeepL for this session; later chunks go
-                            # back through Whisper's built-in translation.
-                            print(f"Disabling DeepL: {e}")
-                            gui_queue.put(("status", "DeepL unavailable - using Whisper translation"))
-                            text_translator = None
-                            task, target_lang, use_text_translator = resolve_pipeline(config, None)
-                            translated = None
-
-                        if use_text_translator:
-                            if translated is None:
-                                stats.add_chunk(time.time() - start_time, had_translation, True, confidence_score)
-                                continue
-                            source_context.append(source_text)
-                            processed_text = translated.strip()
-                        else:
-                            # This chunk was transcribed JA with no translation
-                            # available; skip it rather than showing raw JA.
-                            stats.add_chunk(time.time() - start_time, had_translation, True, confidence_score)
-                            continue
 
                     is_hallucination_result = is_hallucination(processed_text, translator, translation_history)
                     was_hallucination = is_hallucination_result
@@ -154,14 +207,37 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                         subtitle_id += 1
                         print(f"Translation: {processed_text} (confidence: {confidence_score:.2f})")
 
-                        # Emit immediately; speaker label (if any) arrives later
-                        # via a "speaker_update" message from the diarization worker.
+                        subtitle_text = processed_text
+                        if dual_output:
+                            # Second decode of the same chunk: JP transcription.
+                            # Only the decoder-statistics gate applies (the
+                            # string filters are English-oriented).
+                            try:
+                                jp_result = backend.transcribe(
+                                    audio_data, task="transcribe", language=source_lang)
+                                jp_text = jp_result.text.strip()
+                                jp_low, jp_reason = is_low_confidence(jp_result)
+                                if jp_text and not jp_low:
+                                    subtitle_text = f"{jp_text}\n{processed_text}"
+                                elif jp_low:
+                                    logger.debug(f"Dropped JP line ({jp_reason})")
+                            except Exception as e:
+                                logger.warning(f"JP transcription decode failed: {e}")
+
+                        # Format output with speaker label if available
+                        if speaker_label:
+                            display_text = f"[{speaker_label}] {subtitle_text}"
+                            print(f"Translation ({speaker_label}): {processed_text} (confidence: {confidence_score:.2f})")
+                        else:
+                            display_text = subtitle_text
+                            print(f"Translation: {processed_text} (confidence: {confidence_score:.2f})")
+
+                        # Send to GUI with speaker info
                         gui_queue.put(("subtitle", {
-                            "id": subtitle_id,
-                            "text": processed_text,
-                            "display_text": processed_text,
-                            "speaker": None,
-                            "speaker_color": None,
+                            "text": subtitle_text,
+                            "display_text": display_text,
+                            "speaker": speaker_label,
+                            "speaker_color": speaker_color,
                             "confidence": confidence_score
                         }))
 
@@ -185,4 +261,8 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
         traceback.print_exc()
         gui_queue.put(("error", f"Processing error: {e}"))
     finally:
+        try:
+            backend.close()
+        except NameError:
+            pass
         print("Processor thread stopped.")
