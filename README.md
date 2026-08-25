@@ -16,13 +16,14 @@
 
 ## Overview
 
-HoloLiveTL captures audio from your system and translates Japanese speech into English subtitles in real time. Uses the **kotoba-whisper-bilingual** model for ASR/translation, **Silero VAD** for voice activity detection, and optionally **pyannote** for speaker diarization.
+HoloLiveTL captures audio from your system and translates Japanese speech into English subtitles in real time. Uses the **kotoba-whisper-bilingual** model for ASR/translation — running on the **faster-whisper** (CTranslate2) engine by default, with automatic fallback to the original transformers pipeline — **Silero VAD** for voice activity detection, and optionally **pyannote** for speaker diarization.
 
 > **Note:** This uses GPU heavily. Make sure your system can handle the extra load.
 
 ## Features
 
 - **Real-time translation** — Japanese to English subtitle overlay via kotoba-whisper-bilingual
+- **Fast ASR engine** — CTranslate2 (faster-whisper) inference, typically 2-4x faster than the transformers pipeline with lower VRAM; falls back to transformers automatically if CTranslate2 can't load
 - **Dynamic chunking** — Speech-aware audio segmentation using VAD, only processes when speech is detected
 - **Speaker diarization** — Identifies and color-codes different speakers (requires HuggingFace token + pyannote) for using this need to have chunk longer than 10 sec for better result
 - **Hallucination filtering** — Filters out common model hallucinations and repetitive output automatically
@@ -82,6 +83,8 @@ Settings are saved automatically to `translator_config.json`. You can also use p
 | Volume threshold | Minimum RMS level to trigger processing |
 | VAD threshold | Voice activity detection sensitivity |
 | Output mode | `translate` (JP→EN) or `transcribe` (JP→JP) |
+| ASR engine | `faster_whisper` (default, fast) or `transformers` (fallback) |
+| Precision | faster-whisper compute type: `auto`, `float16`, `int8_float16`, `int8` |
 | Speaker diarization | Color-coded speaker labels (requires HF token) |
 | Subtitle appearance | Font size, colors, opacity, shadow, border |
 
@@ -94,13 +97,16 @@ HoloLiveTL/
 ├── requirements.txt        # Dependencies
 ├── presets/                # Saved config presets
 │   └── fbk.json
+├── scripts/
+│   └── bench_asr.py        # Offline latency/quality benchmark of both engines
 └── src/
     ├── gui/
     │   └── main_window.py  # Tkinter GUI + subtitle overlay
     └── modules/
         ├── config.py       # Configuration and defaults
         ├── recorder.py     # Audio capture (fixed + dynamic chunking)
-        ├── processor.py    # ASR/translation pipeline
+        ├── processor.py    # ASR/translation loop
+        ├── asr_backend.py  # ASR engines: faster-whisper (CT2) + transformers fallback
         ├── diarization.py  # Speaker diarization (pyannote)
         ├── filters.py      # Hallucination detection and text cleanup
         ├── audio_utils.py  # Audio device discovery and enhancement
