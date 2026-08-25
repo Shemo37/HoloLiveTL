@@ -100,3 +100,20 @@ def is_hallucination(text, translator, translation_history):
             return True
     
     return False
+
+
+def is_low_confidence(result, no_speech_threshold=0.6, logprob_threshold=-1.0,
+                      compression_ratio_threshold=2.4):
+    """Model-level hallucination gate using real decoder statistics.
+
+    `result` is an AsrResult. Backends that can't provide a statistic set it
+    to None, and that check is skipped - so the transformers fallback path
+    passes through untouched. Returns (is_low, reason).
+    """
+    if result.no_speech_prob is not None and result.no_speech_prob > no_speech_threshold:
+        return True, f"no_speech_prob={result.no_speech_prob:.2f}"
+    if result.compression_ratio is not None and result.compression_ratio > compression_ratio_threshold:
+        return True, f"compression_ratio={result.compression_ratio:.2f} (repetition loop)"
+    if result.avg_logprob is not None and result.avg_logprob < logprob_threshold:
+        return True, f"avg_logprob={result.avg_logprob:.2f}"
+    return False, ""

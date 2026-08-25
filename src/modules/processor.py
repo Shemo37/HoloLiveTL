@@ -11,7 +11,7 @@ import logging
 from .audio_utils import enhance_audio_quality
 from .model_utils import ensure_model_downloaded
 from .asr_backend import load_backend
-from .filters import post_process_translation, is_hallucination
+from .filters import post_process_translation, is_hallucination, is_low_confidence
 from .config import SAMPLE_RATE, MODEL_ID
 
 logger = logging.getLogger(__name__)
@@ -173,6 +173,14 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                 is_hallucination_result = False
 
                 if processed_text:
+                    # Decoder-statistics gate first (real signal, cheap), then
+                    # the string filters for phrases that score fine on logprob
+                    low_conf, reason = is_low_confidence(result)
+                    if low_conf:
+                        print(f"Filtered low-confidence output: '{processed_text}' ({reason})")
+                        stats.add_chunk(time.time() - start_time, True, True, confidence_score)
+                        continue
+
                     is_hallucination_result = is_hallucination(processed_text, translator, translation_history)
                     was_hallucination = is_hallucination_result
 
