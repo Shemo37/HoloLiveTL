@@ -80,6 +80,8 @@ class Config:
             "text_shadow": True,
             "border_width": 2,
             "border_color": "#000000",
+            # Overlay ignores mouse clicks (Windows only); toggle from Appearance
+            "overlay_click_through": False,
 
             # Translation settings
             # "translate" (JP->EN), "transcribe" (JP->JP), or "both"

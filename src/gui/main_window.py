@@ -413,6 +413,9 @@ class ControlGUI:
         self.root.bind('<F6>', lambda e: self.stop_translator())
         self.root.bind('<Control-h>', lambda e: self.history_panel.show())
         self.root.bind('<Control-l>', lambda e: self.open_log_window())
+        self.root.bind('<Control-equal>', lambda e: self.adjust_font_size(+2))
+        self.root.bind('<Control-plus>', lambda e: self.adjust_font_size(+2))
+        self.root.bind('<Control-minus>', lambda e: self.adjust_font_size(-2))
 
     def _patch_stdout(self):
         self.log_file = open("translator_app.log", "a", encoding='utf-8', buffering=1)
@@ -866,6 +869,29 @@ class ControlGUI:
         self.position_control = SubtitlePositionControl(self.root, self.on_subtitle_position_change)
         self.position_control.create(appearance_tab).pack(pady=5, fill="x")
 
+        # Overlay behavior + styling preview
+        overlay_frame = tk.LabelFrame(appearance_tab, text="Overlay", padx=10, pady=10)
+        overlay_frame.pack(pady=5, fill="x")
+
+        self.preview_button = tk.Button(overlay_frame, text="Preview subtitles",
+                                        command=self.toggle_subtitle_preview, width=16)
+        self.preview_button.pack(side="left", padx=5)
+        Tooltip(self.preview_button, "Shows a sample subtitle on the overlay so font, colors, "
+                                     "opacity and position can be styled without starting "
+                                     "translation.")
+
+        self.click_through_var = tk.BooleanVar(value=getattr(self.config, 'overlay_click_through', False))
+        ct = tk.Checkbutton(overlay_frame, text="Click-through overlay",
+                            variable=self.click_through_var,
+                            command=self.on_click_through_change)
+        ct.pack(side="left", padx=(15, 0))
+        Tooltip(ct, "Mouse clicks pass through the overlay to whatever is behind it "
+                    "(Windows only). While enabled the overlay can't be dragged - use the "
+                    "Position buttons above, or untick to drag again.")
+
+        tk.Label(overlay_frame, text="Ctrl+= / Ctrl+- adjust font size",
+                 font=("Helvetica", 8), fg=theme.FG_FAINT).pack(side="right")
+
         # Tab 4: Presets
         presets_tab = tk.Frame(settings_notebook, padx=10, pady=10)
         settings_notebook.add(presets_tab, text="Presets")
@@ -1037,6 +1063,60 @@ class ControlGUI:
         except tk.TclError:
             pass
 
+    PREVIEW_TEXT = "\u3053\u3093\u306b\u3061\u306f\u3001\u30d7\u30ec\u30d3\u30e5\u30fc\u3067\u3059\uff01\nHello, this is a preview!"
+
+    def toggle_subtitle_preview(self):
+        """Show/hide a sample subtitle so appearance can be tuned without
+        starting translation. A running session already shows live text."""
+        if self.worker_threads:
+            messagebox.showinfo("Preview", "Translation is running - the overlay already shows live subtitles.")
+            return
+        if getattr(self, '_preview_active', False):
+            self._preview_active = False
+            self.preview_button.config(text="Preview subtitles")
+            self.destroy_subtitle_window()
+            return
+        self._preview_active = True
+        self.preview_button.config(text="Hide preview")
+        self.create_subtitle_window()
+        self.update_subtitle_text({"text": self.PREVIEW_TEXT, "display_text": self.PREVIEW_TEXT})
+
+    def on_click_through_change(self):
+        self.config.overlay_click_through = self.click_through_var.get()
+        self._apply_click_through()
+
+    def _apply_click_through(self):
+        """Let mouse clicks pass through the overlay (Windows only)."""
+        if not self.subtitle_window or not self.subtitle_window.winfo_exists():
+            return
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            GA_ROOT = 2
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetAncestor(self.subtitle_window.winfo_id(), GA_ROOT)
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if getattr(self.config, 'overlay_click_through', False):
+                style |= WS_EX_LAYERED | WS_EX_TRANSPARENT
+            else:
+                style &= ~WS_EX_TRANSPARENT
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        except Exception as e:
+            logger.warning(f"Could not set overlay click-through: {e}")
+
+    def adjust_font_size(self, delta):
+        size = max(12, min(64, int(self.config.font_size) + delta))
+        self.config.font_size = size
+        try:
+            self.font_var.set(size)
+        except tk.TclError:
+            pass
+        self.update_subtitle_style()
+
     def update_level_meter(self, rms):
         """Draw the audio input level with a tick at the volume threshold.
 
@@ -1134,7 +1214,10 @@ class ControlGUI:
         self.subtitle_window.geometry(f"{win_width}x{win_height}+{x}+{y}")
         self.subtitle_window.wm_attributes("-topmost", True)
         self.subtitle_window.config(bg='green')
-        self.subtitle_window.wm_attributes("-transparentcolor", "green")
+        try:
+            self.subtitle_window.wm_attributes("-transparentcolor", "green")
+        except tk.TclError:
+            pass  # Windows-only attribute; other platforms show the chroma bg
 
         self.background_canvas = tk.Canvas(self.subtitle_window, bg='green', highlightthickness=0)
         self.background_canvas.pack(pady=20, padx=20, expand=True, fill="both")
@@ -1184,6 +1267,7 @@ class ControlGUI:
             widget.bind("<B1-Motion>", self.do_drag)
             widget.bind("<Control-c>", self.copy_subtitle)
             widget.bind("<Control-s>", self.save_subtitle_history)
+        self._apply_click_through()
 
     def destroy_subtitle_window(self):
         if self.subtitle_window:
@@ -1647,6 +1731,9 @@ class ControlGUI:
             self.diarization_status_label.config(text="Speaker Diarization: Loading...", fg="orange")
         self.root.update_idletasks()
 
+        if getattr(self, '_preview_active', False):
+            self._preview_active = False
+            self.preview_button.config(text="Preview subtitles")
         self.create_subtitle_window()
         self.stop_event = threading.Event()
         # Small queue keeps subtitles from lagging far behind live audio when
