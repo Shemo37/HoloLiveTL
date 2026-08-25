@@ -1003,9 +1003,52 @@ class ControlGUI:
         self.worker_threads = []
         self.destroy_subtitle_window()
         self.start_button.config(state="normal")
-        self.stop_button.config(state="disabled")
-        self.status_label.config(text="Status: Stopped", fg="red")
-        self.diarization_status_label.config(text="Speaker Diarization: Disabled", fg="gray")
+        self.stop_button.config(state="disabled", bg=theme.BG_FIELD, fg=theme.FG)
+        self.status_label.config(text="Status: Stopped", fg=theme.FG_DIM)
+        self.diarization_status_label.config(text="Speaker Diarization: Disabled", fg=theme.FG_FAINT)
+        self._hide_load_progress()
+        try:
+            self.level_meter.delete("all")
+        except tk.TclError:
+            pass
+
+    def update_level_meter(self, rms):
+        """Draw the audio input level with a tick at the volume threshold.
+
+        Level is mapped as sqrt(rms / 0.25) so quiet speech is still visible.
+        """
+        if not self.level_meter.winfo_exists():
+            return
+        try:
+            width = max(self.level_meter.winfo_width(), 1)
+            height = self.level_meter.winfo_height()
+            frac = min((max(rms, 0.0) / 0.25) ** 0.5, 1.0)
+            thr = min((max(self.config.volume_threshold, 0.0) / 0.25) ** 0.5, 1.0)
+            speaking = rms >= self.config.volume_threshold
+            self.level_meter.delete("all")
+            if frac > 0:
+                self.level_meter.create_rectangle(
+                    0, 0, int(width * frac), height,
+                    fill=theme.ACCENT if speaking else theme.FG_FAINT, width=0)
+            tick_x = int(width * thr)
+            self.level_meter.create_line(tick_x, 0, tick_x, height,
+                                         fill=theme.WARN, width=2)
+        except tk.TclError:
+            pass
+
+    def _show_load_progress(self):
+        try:
+            self.load_progress.pack(pady=(2, 2))
+            self.load_progress.start(12)
+        except tk.TclError:
+            pass
+
+    def _hide_load_progress(self):
+        try:
+            self.load_progress.stop()
+            self.load_progress.pack_forget()
+        except tk.TclError:
+            pass
 
     def check_gui_queue(self):
         try:
@@ -1013,22 +1056,33 @@ class ControlGUI:
                 msg_type, data = self.gui_queue.get_nowait()
                 if msg_type == "subtitle":
                     self.update_subtitle_text(data)
+                    if isinstance(data, dict) and data.get('text', '').strip():
+                        preview = data['text'].replace('\n', '  \u2022  ')
+                        self.last_translation_label.config(text=preview, fg=theme.FG)
                 elif msg_type == "speaker_update":
                     self.update_speaker_label(data)
+                elif msg_type == "audio_level":
+                    self.update_level_meter(data)
                 elif msg_type == "model_loaded":
-                    self.status_label.config(text="Status: Running", fg="green")
-                    self.stop_button.config(state="normal")
+                    self.status_label.config(text="Status: Running", fg=theme.ACCENT)
+                    self.stop_button.config(state="normal", bg=theme.DANGER,
+                                            fg="white")
+                    self._hide_load_progress()
                 elif msg_type == "status":
-                    self.status_label.config(text=f"Status: {data}", fg="orange")
+                    self.status_label.config(text=f"Status: {data}", fg=theme.WARN)
+                elif msg_type == "engine":
+                    self.status_label.config(text=f"Status: Running \u00b7 {data}",
+                                             fg=theme.ACCENT)
                 elif msg_type == "diarization_status":
                     if data:
-                        self.diarization_status_label.config(text="Speaker Diarization: ENABLED", fg="green")
+                        self.diarization_status_label.config(text="Speaker Diarization: ENABLED", fg=theme.ACCENT)
                         self.diarization_enabled = True
                     else:
-                        self.diarization_status_label.config(text="Speaker Diarization: Disabled", fg="gray")
+                        self.diarization_status_label.config(text="Speaker Diarization: Disabled", fg=theme.FG_FAINT)
                         self.diarization_enabled = False
                 elif msg_type == "error":
-                    self.status_label.config(text="Status: Error!", fg="red")
+                    self.status_label.config(text="Status: Error!", fg=theme.DANGER)
+                    self._hide_load_progress()
                     if self.subtitle_label:
                         self.update_subtitle_text({"text": f"ERROR: {data}", "display_text": f"ERROR: {data}"})
                     self.stop_translator()
@@ -1559,7 +1613,10 @@ class ControlGUI:
         self.stats.reset()
         self.start_button.config(state="disabled")
         self.stop_button.config(state="disabled")
-        self.status_label.config(text="Status: Loading model(s)...", fg="orange")
+        self.status_label.config(text="Status: Loading model(s)...", fg=theme.WARN)
+        self._show_load_progress()
+        self.last_translation_label.config(text="\u2014", fg=theme.FG_DIM)
+        self.update_level_meter(0.0)
 
         if self.config.use_speaker_diarization:
             self.diarization_status_label.config(text="Speaker Diarization: Loading...", fg="orange")
