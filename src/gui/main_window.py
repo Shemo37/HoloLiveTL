@@ -23,6 +23,8 @@ from modules.recorder import recorder_thread
 from modules.processor import processor_thread
 from modules.model_utils import ensure_model_downloaded
 from modules.config import MODEL_ID
+from gui import theme
+from gui.theme import Tooltip, labeled_scale
 
 # Setup logging
 logging.basicConfig(
@@ -360,9 +362,11 @@ class ControlGUI:
         self.gui_queue = gui_queue
 
         self.root.title("Live Audio Translator")
-        self.root.geometry("680x950")
+        theme.setup_theme(self.root)
+        self.root.configure(bg=theme.BG)
+        self.root.geometry("700x860")
         self.root.resizable(True, True)
-        self.root.minsize(650, 750)
+        self.root.minsize(660, 700)
 
         self.worker_threads = []
         self.stop_event = None
@@ -478,91 +482,94 @@ class ControlGUI:
 
         # Header
         header_frame = tk.Frame(self.scrollable_frame)
-        header_frame.pack(pady=10, padx=20, fill='x')
+        header_frame.pack(pady=(10, 4), padx=20, fill='x')
 
         tk.Label(header_frame, text="Live Audio Translator",
-                 font=("Helvetica", 18, "bold")).pack()
-        tk.Label(header_frame, text="Real-time Japanese to English translation with Speaker Diarization",
-                 font=("Helvetica", 9), fg="grey").pack()
+                 font=("Helvetica", 17, "bold")).pack()
+        tk.Label(header_frame, text="Real-time Japanese \u2192 English subtitles",
+                 font=("Helvetica", 9), fg=theme.FG_DIM).pack()
 
-        # Audio device selection
-        device_frame = tk.LabelFrame(self.scrollable_frame, text="Audio Device", padx=10, pady=10)
-        device_frame.pack(pady=5, padx=20, fill='x')
+        # ---- Session card: everything needed to get subtitles on screen ----
+        session = tk.LabelFrame(self.scrollable_frame, text="Session",
+                                padx=12, pady=10, bg=theme.BG_CARD,
+                                fg=theme.FG_DIM, font=("Helvetica", 9, "bold"))
+        session.pack(pady=6, padx=20, fill='x')
 
-        device_row = tk.Frame(device_frame)
+        device_row = tk.Frame(session, bg=theme.BG_CARD)
         device_row.pack(fill='x')
 
+        tk.Label(device_row, text="Audio device:", bg=theme.BG_CARD).pack(side="left")
         self.device_var = tk.StringVar()
         self.device_menu = tk.OptionMenu(device_row, self.device_var, "Loading...")
-        self.device_menu.pack(side="left", padx=5, expand=True, fill='x')
-
-        tk.Button(device_row, text="Refresh", command=self.refresh_devices, width=8).pack(side="right", padx=5)
+        self.device_menu.config(bg=theme.BG_FIELD, activebackground=theme.BG_FIELD,
+                                highlightthickness=0, anchor='w')
+        self.device_menu.pack(side="left", padx=8, expand=True, fill='x')
+        tk.Button(device_row, text="\u21bb Refresh", command=self.refresh_devices,
+                  width=9).pack(side="right")
+        Tooltip(self.device_menu, "The audio source to caption. To capture a stream, pick a "
+                                  "loopback device (VB-Cable, Stereo Mix); a microphone captures you.")
 
         self.refresh_devices()
         self.device_var.trace_add('write', self.on_device_select)
 
-        # ASR engine selection (applies the next time translation is started)
-        engine_frame = tk.LabelFrame(self.scrollable_frame,
-                                     text="ASR Engine (applies on next Start)",
-                                     padx=10, pady=10)
-        engine_frame.pack(pady=5, padx=20, fill='x')
+        button_frame = tk.Frame(session, bg=theme.BG_CARD)
+        button_frame.pack(pady=(10, 4))
 
-        engine_row = tk.Frame(engine_frame)
-        engine_row.pack(fill='x')
+        self.start_button = tk.Button(button_frame, text="\u25b6  Start (F5)",
+                                       command=self.start_translator, bg=theme.ACCENT,
+                                       activebackground=theme.ACCENT_ACTIVE,
+                                       fg="#08210f", activeforeground="#08210f",
+                                       font=("Helvetica", 12, "bold"), width=16, height=2,
+                                       relief="flat", cursor="hand2")
+        self.start_button.pack(side="left", padx=6)
 
-        tk.Label(engine_row, text="Engine:").pack(side="left", padx=(0, 5))
-        self.asr_backend_var = tk.StringVar(value=getattr(self.config, 'asr_backend', 'faster-whisper'))
-        tk.OptionMenu(engine_row, self.asr_backend_var,
-                      'faster-whisper', 'transformers',
-                      command=self.on_asr_backend_change).pack(side="left", padx=5)
+        self.stop_button = tk.Button(button_frame, text="\u25a0  Stop (F6)",
+                                      command=self.stop_translator, bg=theme.BG_FIELD,
+                                      activebackground=theme.DANGER,
+                                      fg=theme.FG, activeforeground="white",
+                                      font=("Helvetica", 12), width=12, height=2,
+                                      relief="flat", cursor="hand2",
+                                      state="disabled")
+        self.stop_button.pack(side="left", padx=6)
 
-        tk.Label(engine_row, text="Precision:").pack(side="left", padx=(15, 5))
-        self.compute_type_var = tk.StringVar(value=getattr(self.config, 'compute_type', 'auto'))
-        tk.OptionMenu(engine_row, self.compute_type_var,
-                      'auto', 'float16', 'int8_float16', 'int8',
-                      command=self.on_compute_type_change).pack(side="left", padx=5)
-
-        tk.Label(engine_row, text="Output:").pack(side="left", padx=(15, 5))
-        self.output_mode_var = tk.StringVar(value=getattr(self.config, 'output_mode', 'translate'))
-        tk.OptionMenu(engine_row, self.output_mode_var,
-                      'translate', 'transcribe', 'both',
-                      command=self.on_output_mode_change).pack(side="left", padx=5)
-
-        # Status
-        status_frame = tk.Frame(self.scrollable_frame)
-        status_frame.pack(pady=10, padx=20, fill='x')
+        status_frame = tk.Frame(session, bg=theme.BG_CARD)
+        status_frame.pack(pady=(4, 0), fill='x')
 
         self.status_label = tk.Label(status_frame, text="Status: Ready",
-                                      font=("Helvetica", 11, "bold"), fg="green")
+                                      font=("Helvetica", 11, "bold"),
+                                      fg=theme.ACCENT, bg=theme.BG_CARD)
         self.status_label.pack()
 
+        self.load_progress = ttk.Progressbar(status_frame, mode="indeterminate", length=260)
+        # not packed until loading starts
+
         self.diarization_status_label = tk.Label(status_frame, text="Speaker Diarization: Disabled",
-                                                   font=("Helvetica", 9), fg="gray")
+                                                   font=("Helvetica", 9),
+                                                   fg=theme.FG_FAINT, bg=theme.BG_CARD)
         self.diarization_status_label.pack()
 
-        # Control buttons
-        button_frame = tk.Frame(self.scrollable_frame)
-        button_frame.pack(pady=5, padx=20)
+        # Live feedback: audio level meter + last translation
+        meter_row = tk.Frame(session, bg=theme.BG_CARD)
+        meter_row.pack(fill='x', pady=(8, 0))
+        tk.Label(meter_row, text="Audio", font=("Helvetica", 8),
+                 fg=theme.FG_FAINT, bg=theme.BG_CARD).pack(side="left")
+        self.level_meter = tk.Canvas(meter_row, height=10, bg=theme.METER_BG,
+                                     highlightthickness=0)
+        self.level_meter.pack(side="left", fill='x', expand=True, padx=8)
+        Tooltip(self.level_meter, "Live input level. If this stays empty while the stream is "
+                                  "audible, the wrong audio device is selected. The tick marks "
+                                  "the volume threshold.")
 
-        self.download_button = tk.Button(button_frame, text="Download Model",
-                                         command=self.download_model, bg="#007bff",
-                                         fg="white", font=("Helvetica", 11), width=14, height=2)
-        self.download_button.pack(side="left", padx=5)
-
-        self.start_button = tk.Button(button_frame, text="Start (F5)",
-                                       command=self.start_translator, bg="#28a745",
-                                       fg="white", font=("Helvetica", 11), width=12, height=2)
-        self.start_button.pack(side="left", padx=5)
-
-        self.stop_button = tk.Button(button_frame, text="Stop (F6)",
-                                      command=self.stop_translator, bg="#dc3545",
-                                      fg="white", font=("Helvetica", 11), width=12, height=2,
-                                      state="disabled")
-        self.stop_button.pack(side="left", padx=5)
+        self.last_translation_label = tk.Label(
+            session, text="\u2014", font=("Helvetica", 10, "italic"),
+            fg=theme.FG_DIM, bg=theme.BG_CARD, wraplength=560, justify="left", anchor="w")
+        self.last_translation_label.pack(fill='x', pady=(6, 0))
+        Tooltip(self.last_translation_label, "Most recent subtitle, mirrored here so you can "
+                                             "check output without looking at the overlay.")
 
         # Quick action buttons
         quick_frame = tk.Frame(self.scrollable_frame)
-        quick_frame.pack(pady=5, padx=20)
+        quick_frame.pack(pady=4, padx=20)
 
         tk.Button(quick_frame, text="History (Ctrl+H)", command=self.history_panel.show, width=14).pack(side="left", padx=3)
         tk.Button(quick_frame, text="Statistics", command=self.stats_panel.show, width=12).pack(side="left", padx=3)
@@ -610,6 +617,63 @@ class ControlGUI:
         tk.Label(vad_frame, text="VAD Threshold (%):").grid(row=2, column=0, sticky="w", pady=2)
         self.vad_threshold_var = tk.StringVar(value=str(int(self.config.vad_threshold * 100)))
         tk.Entry(vad_frame, textvariable=self.vad_threshold_var, width=8).grid(row=2, column=1, padx=5, sticky="w")
+
+        # Tab: Engine (ASR backend + output mode + model download)
+        engine_tab = tk.Frame(settings_notebook, padx=10, pady=10)
+        settings_notebook.add(engine_tab, text="Engine")
+
+        asr_frame = tk.LabelFrame(engine_tab, text="ASR Engine (applies on next Start)",
+                                  padx=10, pady=10)
+        asr_frame.pack(pady=5, fill="x")
+
+        row = tk.Frame(asr_frame)
+        row.pack(fill='x')
+        tk.Label(row, text="Engine:").pack(side="left", padx=(0, 5))
+        self.asr_backend_var = tk.StringVar(value=getattr(self.config, 'asr_backend', 'faster-whisper'))
+        engine_menu = tk.OptionMenu(row, self.asr_backend_var,
+                      'faster-whisper', 'transformers',
+                      command=self.on_asr_backend_change)
+        engine_menu.pack(side="left", padx=5)
+        Tooltip(engine_menu, "faster-whisper (CTranslate2) is 2-4x faster with lower VRAM. "
+                             "transformers is the original engine, kept as a fallback; the app "
+                             "also falls back to it automatically if faster-whisper can't load.")
+
+        tk.Label(row, text="Precision:").pack(side="left", padx=(15, 5))
+        self.compute_type_var = tk.StringVar(value=getattr(self.config, 'compute_type', 'auto'))
+        precision_menu = tk.OptionMenu(row, self.compute_type_var,
+                      'auto', 'float16', 'int8_float16', 'int8',
+                      command=self.on_compute_type_change)
+        precision_menu.pack(side="left", padx=5)
+        Tooltip(precision_menu, "faster-whisper compute type. auto = float16 on GPU, int8 on CPU. "
+                                "int8_float16 halves VRAM for a small accuracy cost.")
+
+        output_frame = tk.LabelFrame(engine_tab, text="Subtitle Output", padx=10, pady=10)
+        output_frame.pack(pady=5, fill="x")
+
+        out_row = tk.Frame(output_frame)
+        out_row.pack(fill='x')
+        tk.Label(out_row, text="Output:").pack(side="left", padx=(0, 5))
+        self.output_mode_var = tk.StringVar(value=getattr(self.config, 'output_mode', 'translate'))
+        output_menu = tk.OptionMenu(out_row, self.output_mode_var,
+                      'translate', 'transcribe', 'both',
+                      command=self.on_output_mode_change)
+        output_menu.pack(side="left", padx=5)
+        tk.Label(output_frame,
+                 text="translate: English subtitles \u2022 transcribe: Japanese subtitles \u2022 "
+                      "both: Japanese line above English (roughly 2x GPU per chunk)",
+                 font=("Helvetica", 9), fg=theme.FG_DIM,
+                 wraplength=560, justify="left").pack(anchor='w', pady=(5, 0))
+
+        model_frame = tk.LabelFrame(engine_tab, text="Models", padx=10, pady=10)
+        model_frame.pack(pady=5, fill="x")
+        self.download_button = tk.Button(model_frame, text="Download Model",
+                                         command=self.download_model, bg=theme.INFO,
+                                         activebackground=theme.INFO,
+                                         fg="white", activeforeground="white",
+                                         relief="flat", width=16)
+        self.download_button.pack(side="left", padx=5)
+        tk.Label(model_frame, text="Models also download automatically on first Start.",
+                 font=("Helvetica", 9), fg=theme.FG_DIM).pack(side="left", padx=8)
 
         # Tab 2: Speaker Diarization (NEW)
         diarization_tab = tk.Frame(settings_notebook, padx=10, pady=10)
@@ -803,13 +867,11 @@ class ControlGUI:
 
         self.refresh_preset_list()
 
-        # Shortcuts info
-        shortcuts_frame = tk.LabelFrame(self.scrollable_frame, text="Keyboard Shortcuts", padx=10, pady=5)
-        shortcuts_frame.pack(pady=10, padx=20, fill='x')
-
-        tk.Label(shortcuts_frame, text="F5: Start  |  F6: Stop  |  Ctrl+H: History  |  Ctrl+L: Log  |  Ctrl+Q: Quit\n"
-                                        "Subtitle Window: Drag to move  |  Ctrl+C: Copy  |  Ctrl+S: Save  |  Esc: Stop",
-                 font=("Consolas", 9), justify="center").pack(pady=5)
+        # Shortcuts footer
+        tk.Label(self.scrollable_frame,
+                 text="F5 Start \u00b7 F6 Stop \u00b7 Ctrl+H History \u00b7 Ctrl+L Log \u00b7 "
+                      "Ctrl+Q Quit \u00b7 overlay: drag to move, Esc stops",
+                 font=("Helvetica", 8), fg=theme.FG_FAINT).pack(pady=(6, 10))
 
     def _toggle_token_visibility(self):
         if self.show_token_var.get():
