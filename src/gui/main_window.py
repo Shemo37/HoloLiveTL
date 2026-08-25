@@ -589,34 +589,51 @@ class ControlGUI:
 
         self.dynamic_chunk_var = tk.BooleanVar(value=self.config.use_dynamic_chunking)
         tk.Checkbutton(dynamic_frame, text="Enable Dynamic Chunks (Recommended)",
-                       variable=self.dynamic_chunk_var, font=("Helvetica", 10)).grid(row=0, column=0, columnspan=4, sticky="w")
+                       variable=self.dynamic_chunk_var, font=("Helvetica", 10)).pack(anchor="w")
 
-        tk.Label(dynamic_frame, text="Silence Timeout (s):").grid(row=1, column=0, sticky="w", pady=2)
-        self.dyn_silence_var = tk.StringVar(value=str(self.config.dynamic_silence_timeout))
-        tk.Entry(dynamic_frame, textvariable=self.dyn_silence_var, width=8).grid(row=1, column=1, padx=5, sticky="w")
+        self.dyn_silence_var = tk.DoubleVar(value=float(self.config.dynamic_silence_timeout))
+        labeled_scale(dynamic_frame, "Silence timeout", 0.2, 3.0, self.dyn_silence_var,
+                      fmt="{:.1f}s", resolution=0.1,
+                      tooltip="How long a pause ends the current subtitle chunk. Lower = "
+                              "snappier subtitles; higher = fewer mid-sentence cuts."
+                      ).pack(fill='x', pady=2)
 
-        tk.Label(dynamic_frame, text="Max Duration (s):").grid(row=1, column=2, sticky="w", padx=(10,0))
-        self.dyn_max_dur_var = tk.StringVar(value=str(self.config.dynamic_max_chunk_duration))
-        tk.Entry(dynamic_frame, textvariable=self.dyn_max_dur_var, width=8).grid(row=1, column=3, padx=5, sticky="w")
+        self.dyn_max_dur_var = tk.DoubleVar(value=float(self.config.dynamic_max_chunk_duration))
+        labeled_scale(dynamic_frame, "Max chunk duration", 2.0, 15.0, self.dyn_max_dur_var,
+                      fmt="{:.1f}s", resolution=0.5,
+                      tooltip="Hard cap per chunk. Speaker diarization works best at 10s or "
+                              "more; plain subtitles feel best around 6-8s."
+                      ).pack(fill='x', pady=2)
 
-        tk.Label(dynamic_frame, text="Min Speech (s):").grid(row=2, column=0, sticky="w", pady=2)
-        self.dyn_min_speech_var = tk.StringVar(value=str(self.config.dynamic_min_speech_duration))
-        tk.Entry(dynamic_frame, textvariable=self.dyn_min_speech_var, width=8).grid(row=2, column=1, padx=5, sticky="w")
+        self.dyn_min_speech_var = tk.DoubleVar(value=float(self.config.dynamic_min_speech_duration))
+        labeled_scale(dynamic_frame, "Min speech duration", 0.1, 2.0, self.dyn_min_speech_var,
+                      fmt="{:.1f}s", resolution=0.1,
+                      tooltip="Speech bursts shorter than this are ignored. Raise it if "
+                              "coughs/keyboard sounds produce junk subtitles."
+                      ).pack(fill='x', pady=2)
 
         # VAD settings
         vad_frame = tk.LabelFrame(audio_tab, text="Voice Activity Detection", padx=10, pady=10)
         vad_frame.pack(pady=5, fill="x")
 
         self.vad_var = tk.BooleanVar(value=self.config.use_vad_filter)
-        tk.Checkbutton(vad_frame, text="Enable VAD Filter", variable=self.vad_var, font=("Helvetica", 10)).grid(row=0, column=0, columnspan=2, sticky="w")
+        tk.Checkbutton(vad_frame, text="Enable VAD Filter", variable=self.vad_var, font=("Helvetica", 10)).pack(anchor="w")
 
-        tk.Label(vad_frame, text="Volume Threshold:").grid(row=1, column=0, sticky="w", pady=2)
-        self.volume_var = tk.StringVar(value=str(self.config.volume_threshold))
-        tk.Entry(vad_frame, textvariable=self.volume_var, width=8).grid(row=1, column=1, padx=5, sticky="w")
+        self.volume_var = tk.DoubleVar(value=float(self.config.volume_threshold))
+        labeled_scale(vad_frame, "Volume threshold", 0.0005, 0.02, self.volume_var,
+                      fmt="{:.4f}", resolution=0.0005,
+                      tooltip="Minimum input level treated as sound (the orange tick on the "
+                              "session meter). Raise it if room noise triggers subtitles; "
+                              "lower it if quiet speech is missed."
+                      ).pack(fill='x', pady=2)
 
-        tk.Label(vad_frame, text="VAD Threshold (%):").grid(row=2, column=0, sticky="w", pady=2)
-        self.vad_threshold_var = tk.StringVar(value=str(int(self.config.vad_threshold * 100)))
-        tk.Entry(vad_frame, textvariable=self.vad_threshold_var, width=8).grid(row=2, column=1, padx=5, sticky="w")
+        self.vad_threshold_var = tk.IntVar(value=int(self.config.vad_threshold * 100))
+        labeled_scale(vad_frame, "VAD sensitivity", 0, 100, self.vad_threshold_var,
+                      fmt="{:.0f}%", resolution=1,
+                      tooltip="How sure the voice detector must be before treating sound as "
+                              "speech. Higher = stricter (fewer false subtitles, may clip "
+                              "soft speech)."
+                      ).pack(fill='x', pady=2)
 
         # Tab: Engine (ASR backend + output mode + model download)
         engine_tab = tk.Frame(settings_notebook, padx=10, pady=10)
@@ -719,12 +736,14 @@ class ControlGUI:
         speaker_settings_frame.pack(pady=5, fill="x")
 
         tk.Label(speaker_settings_frame, text="Min Speakers:").grid(row=0, column=0, sticky="w", pady=2)
-        self.min_speakers_var = tk.StringVar(value=str(self.config.min_speakers))
-        tk.Entry(speaker_settings_frame, textvariable=self.min_speakers_var, width=5).grid(row=0, column=1, padx=5, sticky="w")
+        self.min_speakers_var = tk.IntVar(value=int(self.config.min_speakers))
+        ttk.Spinbox(speaker_settings_frame, from_=1, to=10, textvariable=self.min_speakers_var,
+                    width=4).grid(row=0, column=1, padx=5, sticky="w")
 
         tk.Label(speaker_settings_frame, text="Max Speakers:").grid(row=0, column=2, sticky="w", pady=2, padx=(10,0))
-        self.max_speakers_var = tk.StringVar(value=str(self.config.max_speakers))
-        tk.Entry(speaker_settings_frame, textvariable=self.max_speakers_var, width=5).grid(row=0, column=3, padx=5, sticky="w")
+        self.max_speakers_var = tk.IntVar(value=int(self.config.max_speakers))
+        ttk.Spinbox(speaker_settings_frame, from_=1, to=10, textvariable=self.max_speakers_var,
+                    width=4).grid(row=0, column=3, padx=5, sticky="w")
 
         self.show_speaker_colors_var = tk.BooleanVar(value=self.config.show_speaker_colors)
         tk.Checkbutton(speaker_settings_frame, text="Show speaker colors in subtitle",
@@ -795,47 +814,53 @@ class ControlGUI:
         font_frame = tk.LabelFrame(appearance_tab, text="Font Settings", padx=10, pady=10)
         font_frame.pack(pady=5, fill="x")
 
-        tk.Label(font_frame, text="Font Size:").grid(row=0, column=0, sticky="w", pady=2)
-        self.font_var = tk.StringVar(value=str(self.config.font_size))
-        self.font_entry = tk.Entry(font_frame, textvariable=self.font_var, width=8)
-        self.font_entry.grid(row=0, column=1, padx=5, sticky="w")
-        self.font_entry.bind('<KeyRelease>', self.update_subtitle_style)
+        self.font_var = tk.IntVar(value=int(self.config.font_size))
+        labeled_scale(font_frame, "Font size", 12, 64, self.font_var,
+                      fmt="{:.0f}px", resolution=1,
+                      command=self.update_subtitle_style,
+                      tooltip="Applies live - use Preview (below) to see it without starting."
+                      ).pack(fill='x', pady=2)
 
-        tk.Label(font_frame, text="Font Weight:").grid(row=0, column=2, sticky="w", padx=(10, 0))
+        style_row = tk.Frame(font_frame)
+        style_row.pack(fill='x', pady=2)
+        tk.Label(style_row, text="Font Weight:").pack(side="left")
         self.font_weight_var = tk.StringVar(value=self.config.font_weight)
-        tk.OptionMenu(font_frame, self.font_weight_var, 'normal', 'bold',
-                      command=self.on_font_weight_change).grid(row=0, column=3, padx=5, sticky="w")
+        tk.OptionMenu(style_row, self.font_weight_var, 'normal', 'bold',
+                      command=self.on_font_weight_change).pack(side="left", padx=5)
 
-        tk.Label(font_frame, text="Font Color:").grid(row=1, column=0, sticky="w", pady=2)
-        self.font_color_btn = tk.Button(font_frame, text="Pick", command=self.pick_font_color, width=6)
-        self.font_color_btn.grid(row=1, column=1, padx=5, sticky="w")
-        self.font_color_display = tk.Label(font_frame, text='    ', bg=self.config.subtitle_font_color, relief="solid", borderwidth=1)
-        self.font_color_display.grid(row=1, column=2, padx=5, sticky="w")
+        tk.Label(style_row, text="Font Color:").pack(side="left", padx=(12, 0))
+        self.font_color_btn = tk.Button(style_row, text="Pick", command=self.pick_font_color, width=6)
+        self.font_color_btn.pack(side="left", padx=5)
+        self.font_color_display = tk.Label(style_row, text='    ', bg=self.config.subtitle_font_color, relief="solid", borderwidth=1)
+        self.font_color_display.pack(side="left", padx=5)
 
         self.text_shadow_var = tk.BooleanVar(value=getattr(self.config, 'text_shadow', True))
-        tk.Checkbutton(font_frame, text="Text Shadow", variable=self.text_shadow_var,
-                       command=self.on_text_shadow_change).grid(row=1, column=3, sticky="w")
+        tk.Checkbutton(style_row, text="Text Shadow", variable=self.text_shadow_var,
+                       command=self.on_text_shadow_change).pack(side="left", padx=(12, 0))
 
         # Background settings
         bg_frame = tk.LabelFrame(appearance_tab, text="Background Settings", padx=10, pady=10)
         bg_frame.pack(pady=5, fill="x")
 
-        tk.Label(bg_frame, text="BG Mode:").grid(row=0, column=0, sticky="w", pady=2)
+        self.opacity_var = tk.IntVar(value=int(self.config.window_opacity * 100))
+        labeled_scale(bg_frame, "Opacity", 10, 100, self.opacity_var,
+                      fmt="{:.0f}%", resolution=1,
+                      command=self.on_opacity_change,
+                      tooltip="Overlay window opacity. Applies live."
+                      ).pack(fill='x', pady=2)
+
+        bg_row = tk.Frame(bg_frame)
+        bg_row.pack(fill='x', pady=2)
+        tk.Label(bg_row, text="BG Mode:").pack(side="left")
         self.bg_mode_var = tk.StringVar(value=self.config.subtitle_bg_mode)
-        tk.OptionMenu(bg_frame, self.bg_mode_var, 'transparent', 'solid',
-                      command=self.set_bg_mode).grid(row=0, column=1, padx=5, sticky="w")
+        tk.OptionMenu(bg_row, self.bg_mode_var, 'transparent', 'solid',
+                      command=self.set_bg_mode).pack(side="left", padx=5)
 
-        tk.Label(bg_frame, text="Opacity (%):").grid(row=0, column=2, sticky="w", padx=(10,0))
-        self.opacity_var = tk.StringVar(value=str(int(self.config.window_opacity * 100)))
-        self.opacity_entry = tk.Entry(bg_frame, textvariable=self.opacity_var, width=8)
-        self.opacity_entry.grid(row=0, column=3, padx=5, sticky="w")
-        self.opacity_entry.bind('<KeyRelease>', self.on_opacity_change)
-
-        tk.Label(bg_frame, text="BG Color:").grid(row=1, column=0, sticky="w", pady=2)
-        self.bg_color_btn = tk.Button(bg_frame, text="Pick", command=self.pick_bg_color, width=6)
-        self.bg_color_btn.grid(row=1, column=1, padx=5, sticky="w")
-        self.bg_color_display = tk.Label(bg_frame, text='    ', bg=self.config.subtitle_bg_color, relief="solid", borderwidth=1)
-        self.bg_color_display.grid(row=1, column=2, padx=5, sticky="w")
+        tk.Label(bg_row, text="BG Color:").pack(side="left", padx=(12, 0))
+        self.bg_color_btn = tk.Button(bg_row, text="Pick", command=self.pick_bg_color, width=6)
+        self.bg_color_btn.pack(side="left", padx=5)
+        self.bg_color_display = tk.Label(bg_row, text='    ', bg=self.config.subtitle_bg_color, relief="solid", borderwidth=1)
+        self.bg_color_display.pack(side="left", padx=5)
 
         # Position controls
         self.position_control = SubtitlePositionControl(self.root, self.on_subtitle_position_change)
@@ -937,31 +962,31 @@ class ControlGUI:
         self.config.font_weight = "bold"
         self.config.text_shadow = True
         self.config.use_dynamic_chunking = True
-        self.config.dynamic_silence_timeout = 1.2
-        self.config.dynamic_max_chunk_duration = 15.0
+        self.config.dynamic_silence_timeout = 0.9
+        self.config.dynamic_max_chunk_duration = 8.0
         self.config.dynamic_min_speech_duration = 0.3
         self.config.use_speaker_diarization = DEFAULT_USE_DIARIZATION
         self.config.min_speakers = DEFAULT_MIN_SPEAKERS
         self.config.max_speakers = DEFAULT_MAX_SPEAKERS
 
         # Update UI
-        self.volume_var.set(str(self.config.volume_threshold))
+        self.volume_var.set(float(self.config.volume_threshold))
         self.vad_var.set(self.config.use_vad_filter)
-        self.vad_threshold_var.set(str(int(self.config.vad_threshold * 100)))
-        self.font_var.set(str(self.config.font_size))
+        self.vad_threshold_var.set(int(self.config.vad_threshold * 100))
+        self.font_var.set(int(self.config.font_size))
         self.font_weight_var.set(self.config.font_weight)
-        self.opacity_var.set(str(int(self.config.window_opacity * 100)))
+        self.opacity_var.set(int(self.config.window_opacity * 100))
         self.bg_mode_var.set(self.config.subtitle_bg_mode)
         self.bg_color_display.config(bg=self.config.subtitle_bg_color)
         self.font_color_display.config(bg=self.config.subtitle_font_color)
         self.text_shadow_var.set(self.config.text_shadow)
         self.dynamic_chunk_var.set(self.config.use_dynamic_chunking)
-        self.dyn_silence_var.set(str(self.config.dynamic_silence_timeout))
-        self.dyn_max_dur_var.set(str(self.config.dynamic_max_chunk_duration))
-        self.dyn_min_speech_var.set(str(self.config.dynamic_min_speech_duration))
+        self.dyn_silence_var.set(float(self.config.dynamic_silence_timeout))
+        self.dyn_max_dur_var.set(float(self.config.dynamic_max_chunk_duration))
+        self.dyn_min_speech_var.set(float(self.config.dynamic_min_speech_duration))
         self.diarization_var.set(self.config.use_speaker_diarization)
-        self.min_speakers_var.set(str(self.config.min_speakers))
-        self.max_speakers_var.set(str(self.config.max_speakers))
+        self.min_speakers_var.set(int(self.config.min_speakers))
+        self.max_speakers_var.set(int(self.config.max_speakers))
 
         self.update_subtitle_style()
         self.config.save_config()
@@ -1835,23 +1860,23 @@ class ControlGUI:
                     setattr(self.config, key, value)
 
             # Update UI
-            self.volume_var.set(str(self.config.volume_threshold))
-            self.opacity_var.set(str(int(self.config.window_opacity * 100)))
-            self.font_var.set(str(self.config.font_size))
+            self.volume_var.set(float(self.config.volume_threshold))
+            self.opacity_var.set(int(self.config.window_opacity * 100))
+            self.font_var.set(int(self.config.font_size))
             self.font_weight_var.set(self.config.font_weight)
             self.vad_var.set(self.config.use_vad_filter)
-            self.vad_threshold_var.set(str(int(self.config.vad_threshold * 100)))
+            self.vad_threshold_var.set(int(self.config.vad_threshold * 100))
             self.bg_mode_var.set(self.config.subtitle_bg_mode)
             self.bg_color_display.config(bg=self.config.subtitle_bg_color)
             self.font_color_display.config(bg=self.config.subtitle_font_color)
             self.text_shadow_var.set(self.config.text_shadow)
             self.dynamic_chunk_var.set(self.config.use_dynamic_chunking)
-            self.dyn_silence_var.set(str(self.config.dynamic_silence_timeout))
-            self.dyn_max_dur_var.set(str(self.config.dynamic_max_chunk_duration))
-            self.dyn_min_speech_var.set(str(self.config.dynamic_min_speech_duration))
+            self.dyn_silence_var.set(float(self.config.dynamic_silence_timeout))
+            self.dyn_max_dur_var.set(float(self.config.dynamic_max_chunk_duration))
+            self.dyn_min_speech_var.set(float(self.config.dynamic_min_speech_duration))
             self.diarization_var.set(getattr(self.config, 'use_speaker_diarization', False))
-            self.min_speakers_var.set(str(getattr(self.config, 'min_speakers', 1)))
-            self.max_speakers_var.set(str(getattr(self.config, 'max_speakers', 5)))
+            self.min_speakers_var.set(int(getattr(self.config, 'min_speakers', 1)))
+            self.max_speakers_var.set(int(getattr(self.config, 'max_speakers', 5)))
 
             self.update_subtitle_style()
             messagebox.showinfo("Success", f"Preset '{preset_name}' loaded.")
