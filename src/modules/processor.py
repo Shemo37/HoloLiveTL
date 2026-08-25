@@ -10,7 +10,7 @@ import traceback
 import logging
 from transformers import pipeline, AutoModelForSpeechSeq2Seq, AutoProcessor
 from .audio_utils import enhance_audio_quality
-from .model_utils import ensure_model_downloaded, get_kotoba_generate_kwargs, get_kotoba_pipeline_kwargs, optimize_for_vtuber_content
+from .model_utils import ensure_model_downloaded, get_kotoba_generate_kwargs, get_kotoba_pipeline_kwargs
 from .filters import post_process_translation, is_hallucination
 from .config import SAMPLE_RATE, MODEL_ID
 
@@ -128,11 +128,13 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                 raise Exception(f"Could not load model: {e}, {e2}")
 
         task = "translate" if config.output_mode == "translate" else "transcribe"
-        target_lang = "en" if task == "translate" else config.language_code
+        # The language token is the OUTPUT language for this model. Transcribe
+        # mode must request Japanese ("ja"), never config.language_code, whose
+        # default "en" is the subtitle display language.
+        target_lang = "en" if task == "translate" else getattr(config, 'source_language_code', 'ja')
         print(f"Setting model task to: '{task}' targeting '{target_lang}' for Japanese audio.")
 
         generate_kwargs = get_kotoba_generate_kwargs(task, target_lang)
-        generate_kwargs = optimize_for_vtuber_content(generate_kwargs)
         print("ASR Model loaded successfully.")
 
         # Notify GUI about diarization status
@@ -154,25 +156,30 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
             had_translation, was_hallucination = False, False
             try:
                 audio_chunk_np = audio_queue.get(timeout=1)
-
-                audio_chunk_np = enhance_audio_quality(audio_chunk_np.flatten(), sample_rate=SAMPLE_RATE)
+                raw_audio = audio_chunk_np.flatten()
 
                 if not config.use_dynamic_chunking:
-                    rms = np.sqrt(np.mean(audio_chunk_np ** 2))
+                    # Gate on the RAW signal BEFORE enhancement: normalization
+                    # would otherwise boost silence past the threshold and make
+                    # this check dead code.
+                    rms = np.sqrt(np.mean(raw_audio ** 2))
                     if rms < config.volume_threshold:
                         stats.add_chunk(time.time() - start_time, False, False)
                         continue
 
                     if config.use_vad_filter and vad_model is not None:
-                        audio_tensor = torch.from_numpy(audio_chunk_np.flatten()).float()
+                        audio_tensor = torch.from_numpy(raw_audio).float()
                         if len(audio_tensor) < 512:
                             audio_tensor = torch.nn.functional.pad(audio_tensor, (0, 512 - len(audio_tensor)))
                         speech_prob = vad_model(audio_tensor, SAMPLE_RATE).item()
-
-                        speech_windows = [prob > config.vad_threshold for prob in [speech_prob]]
-                        if sum(speech_windows) < 3:
+                        if speech_prob < config.vad_threshold:
                             stats.add_chunk(time.time() - start_time, False, False)
                             continue
+
+                if getattr(config, 'enhance_audio', True):
+                    audio_chunk_np = enhance_audio_quality(raw_audio, sample_rate=SAMPLE_RATE)
+                else:
+                    audio_chunk_np = raw_audio
 
                 audio_data = audio_chunk_np.flatten().astype(np.float32)
                 min_samples = int(SAMPLE_RATE * 1.0)

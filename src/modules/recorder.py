@@ -1,6 +1,7 @@
 
 import os
 import numpy as np
+from collections import deque
 import torch
 import traceback
 from queue import Queue
@@ -71,6 +72,9 @@ def dynamic_recorder_thread(stop_event, audio_queue, config, gui_queue, selected
         is_speaking = False
         speech_buffer = []
         silence_frames_after_speech = 0
+        # ~300ms of pre-roll so the first mora isn't clipped when VAD fires
+        preroll_frames = max(1, int(300 / VAD_FRAME_DURATION_MS))
+        preroll = deque(maxlen=preroll_frames)
         
         silence_timeout_frames = int(config.dynamic_silence_timeout * 1000 / VAD_FRAME_DURATION_MS)
         max_chunk_frames = int(config.dynamic_max_chunk_duration * 1000 / VAD_FRAME_DURATION_MS)
@@ -135,11 +139,17 @@ def dynamic_recorder_thread(stop_event, audio_queue, config, gui_queue, selected
                         is_speaking = False
                         speech_buffer = []
                         silence_frames_after_speech = 0
+                        preroll.clear()
 
                 elif is_speech:
                     is_speaking = True
+                    # Seed with buffered pre-roll: VAD fires a frame or two into
+                    # the utterance, so the attack lives in these frames.
+                    speech_buffer = list(preroll)
                     speech_buffer.append(frame_data)
                     silence_frames_after_speech = 0
+                else:
+                    preroll.append(frame_data)
 
     except Exception as e:
         print(f"🔴 Recorder Thread Error (Dynamic): {e}")

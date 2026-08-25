@@ -58,9 +58,14 @@ class Config:
 
             # Dynamic chunking
             "use_dynamic_chunking": True,
-            "dynamic_max_chunk_duration": 15.0,
-            "dynamic_silence_timeout": 1.2,
+            # Note: speaker diarization works best with chunks >= 10s; raise
+            # dynamic_max_chunk_duration when enabling it.
+            "dynamic_max_chunk_duration": 8.0,
+            "dynamic_silence_timeout": 0.7,
             "dynamic_min_speech_duration": 0.3,
+
+            # Audio preprocessing (high-pass + peak normalization)
+            "enhance_audio": True,
 
             # Appearance settings
             "window_opacity": DEFAULT_WINDOW_OPACITY,
@@ -75,6 +80,9 @@ class Config:
 
             # Translation settings
             "output_mode": "translate",
+            # Language of the incoming audio, used as the model token in
+            # transcribe mode (language_code stays the display language)
+            "source_language_code": "ja",
 
             # Speaker diarization settings
             "use_speaker_diarization": DEFAULT_USE_DIARIZATION,

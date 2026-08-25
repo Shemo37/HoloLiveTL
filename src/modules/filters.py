@@ -1,16 +1,26 @@
 import re
 
 # Hallucination filters
+# Substring matches: phrases that are near-certain Whisper hallucinations even
+# in the middle of a longer line. Conversational phrases that legitimately occur
+# in stream speech ("let me know", "subscribe", "i cannot"...) were moved to the
+# whole-line filter below so they no longer delete valid translations.
 SUBSTRING_HALLUCINATION_FILTER = [
-    "thank you for watching", "thanks for watching", "don't forget",
-    "to subscribe", "subscribe", "bell icon", "see you next time",
-    "in the next video", "like and subscribe", "hit the bell",
-    "comment below", "let me know", "as a language model", 
-    "provide more context", "i'm an ai", "i cannot", "i don't have access",
-    "please provide", "more information", "context is needed",
+    "thank you for watching", "thanks for watching", "bell icon",
+    "see you next time", "in the next video", "like and subscribe",
+    "hit the bell", "as a language model", "provide more context",
+    "i'm an ai", "context is needed",
     "in central tokyo, the temperature is likely to rise rapidly from morning",
     "in central tokyo", "the temperature is likely to rise"
 ]
+
+# Whole-line matches (after punctuation stripping): only hallucinations when
+# they are the entire output.
+WHOLE_LINE_HALLUCINATION_FILTER = {
+    "dont forget", "to subscribe", "subscribe", "comment below",
+    "let me know", "i cannot", "i dont have access", "please provide",
+    "more information",
+}
 
 EXACT_MATCH_HALLUCINATION_FILTER = {
     "i see", "i understand", "i know", "i'm sorry", "thank you", "thanks",
@@ -32,7 +42,7 @@ PRESERVE_SOUNDS = {
 
 QUALITY_INDICATORS = {
     "repetitive_patterns": [r"(.{1,10})\1{3,}", r"(\w+\s+)\1{2,}"],
-    "nonsense_patterns": [r"[a-z]{15,}", r"\b\w{1}\s+\w{1}\s+\w{1}\b"],
+    "nonsense_patterns": [r"[a-z]{20,}", r"\b\w{1}\s+\w{1}\s+\w{1}\b"],
     "filler_heavy": [r"\b(um|uh|ah|eh|mm)\b.*\b(um|uh|ah|eh|mm)\b.*\b(um|uh|ah|eh|mm)\b"]
 }
 
@@ -66,6 +76,10 @@ def is_hallucination(text, translator, translation_history):
     if text_clean in EXACT_MATCH_HALLUCINATION_FILTER:
         if text_clean not in PRESERVE_SOUNDS:
             return True
+
+    # Phrases that are only hallucinations as the entire line
+    if text_clean in WHOLE_LINE_HALLUCINATION_FILTER:
+        return True
     
     # Check substring matches
     for phrase in SUBSTRING_HALLUCINATION_FILTER:
