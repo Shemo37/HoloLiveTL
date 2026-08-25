@@ -82,7 +82,7 @@ Settings are saved automatically to `translator_config.json`. You can also use p
 | Dynamic chunking | Speech-aware segmentation (on by default) |
 | Volume threshold | Minimum RMS level to trigger processing |
 | VAD threshold | Voice activity detection sensitivity |
-| Output mode | `translate` (JP→EN) or `transcribe` (JP→JP) |
+| Output mode | `translate` (JP→EN), `transcribe` (JP→JP), or `both` (JP line above EN line; ~2x ASR cost per chunk) |
 | ASR engine | `faster_whisper` (default, fast) or `transformers` (fallback) |
 | Precision | faster-whisper compute type: `auto`, `float16`, `int8_float16`, `int8` |
 | Speaker diarization | Color-coded speaker labels (requires HF token) |

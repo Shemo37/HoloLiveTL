@@ -80,8 +80,11 @@ class AsrBackend:
 
     name = "base"
 
-    def transcribe(self, audio: np.ndarray) -> AsrResult:
-        """audio: mono float32 numpy array sampled at SAMPLE_RATE (16 kHz)."""
+    def transcribe(self, audio: np.ndarray, task=None, language=None) -> AsrResult:
+        """audio: mono float32 numpy array sampled at SAMPLE_RATE (16 kHz).
+
+        task/language override the defaults for this one call (used by dual
+        JP+EN subtitle mode to run a second decode on the same chunk)."""
         raise NotImplementedError
 
     def warm_up(self):
@@ -149,11 +152,19 @@ class FasterWhisperBackend(AsrBackend):
         self.options = _filter_kwargs(self.model.transcribe, options)
         logger.info("faster-whisper loaded (device=%s, compute_type=%s)", device, compute_type)
 
-    def transcribe(self, audio: np.ndarray) -> AsrResult:
+    def transcribe(self, audio: np.ndarray, task=None, language=None) -> AsrResult:
         audio = _prepare_audio(audio)
 
+        options = self.options
+        if task is not None or language is not None:
+            options = dict(options)
+            if task is not None and "task" in self.options:
+                options["task"] = task
+            if language is not None and "language" in self.options:
+                options["language"] = language
+
         # transcribe() returns a lazy generator; decoding happens on iteration.
-        seg_iter, _info = self.model.transcribe(audio, **self.options)
+        seg_iter, _info = self.model.transcribe(audio, **options)
 
         segments = []
         for seg in seg_iter:
@@ -254,12 +265,18 @@ class TransformersBackend(AsrBackend):
             )
             print("Model loaded successfully from Hugging Face.")
 
-        self.generate_kwargs = get_kotoba_generate_kwargs(task, language)
+        self._make_generate_kwargs = get_kotoba_generate_kwargs
+        self._kwargs_cache = {(task, language): get_kotoba_generate_kwargs(task, language)}
 
-    def transcribe(self, audio: np.ndarray) -> AsrResult:
+    def transcribe(self, audio: np.ndarray, task=None, language=None) -> AsrResult:
         audio = _prepare_audio(audio)
+        key = (task or self.task, language or self.language)
+        generate_kwargs = self._kwargs_cache.get(key)
+        if generate_kwargs is None:
+            generate_kwargs = self._make_generate_kwargs(*key)
+            self._kwargs_cache[key] = generate_kwargs
         result = self.pipe({"sampling_rate": SAMPLE_RATE, "raw": audio},
-                           generate_kwargs=self.generate_kwargs)
+                           generate_kwargs=generate_kwargs)
         text = (result.get("text") or "").strip()
 
         # No decoder log-probs through the pipeline API: word-count heuristic,

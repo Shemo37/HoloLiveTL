@@ -82,12 +82,17 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                 print(f"Failed to initialize speaker diarization: {e}")
                 use_diarization = False
 
-        task = "translate" if config.output_mode == "translate" else "transcribe"
+        source_lang = getattr(config, 'source_language_code', 'ja')
+        # "both" shows the JP transcription above the EN translation; the
+        # primary decode is the translation, the JP line is a second decode.
+        dual_output = config.output_mode == "both"
+        task = "transcribe" if config.output_mode == "transcribe" else "translate"
         # The language token is the OUTPUT language for this model. Transcribe
         # mode must request Japanese ("ja"), never config.language_code, whose
         # default "en" is the subtitle display language.
-        target_lang = "en" if task == "translate" else getattr(config, 'source_language_code', 'ja')
-        print(f"Setting model task to: '{task}' targeting '{target_lang}' for Japanese audio.")
+        target_lang = "en" if task == "translate" else source_lang
+        mode_desc = "dual JP+EN" if dual_output else f"'{task}' targeting '{target_lang}'"
+        print(f"Setting model task to: {mode_desc} for Japanese audio.")
 
         print("Loading ASR model...")
         backend = load_backend(config, device=device, model_dir=model_dir,
@@ -192,17 +197,34 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
 
                         last_valid_translation = processed_text
 
+                        subtitle_text = processed_text
+                        if dual_output:
+                            # Second decode of the same chunk: JP transcription.
+                            # Only the decoder-statistics gate applies (the
+                            # string filters are English-oriented).
+                            try:
+                                jp_result = backend.transcribe(
+                                    audio_data, task="transcribe", language=source_lang)
+                                jp_text = jp_result.text.strip()
+                                jp_low, jp_reason = is_low_confidence(jp_result)
+                                if jp_text and not jp_low:
+                                    subtitle_text = f"{jp_text}\n{processed_text}"
+                                elif jp_low:
+                                    logger.debug(f"Dropped JP line ({jp_reason})")
+                            except Exception as e:
+                                logger.warning(f"JP transcription decode failed: {e}")
+
                         # Format output with speaker label if available
                         if speaker_label:
-                            display_text = f"[{speaker_label}] {processed_text}"
+                            display_text = f"[{speaker_label}] {subtitle_text}"
                             print(f"Translation ({speaker_label}): {processed_text} (confidence: {confidence_score:.2f})")
                         else:
-                            display_text = processed_text
+                            display_text = subtitle_text
                             print(f"Translation: {processed_text} (confidence: {confidence_score:.2f})")
 
                         # Send to GUI with speaker info
                         gui_queue.put(("subtitle", {
-                            "text": processed_text,
+                            "text": subtitle_text,
                             "display_text": display_text,
                             "speaker": speaker_label,
                             "speaker_color": speaker_color,

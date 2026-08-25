@@ -81,6 +81,9 @@ class Config:
             "border_color": "#000000",
 
             # Translation settings
+            # "translate" (JP->EN), "transcribe" (JP->JP), or "both"
+            # (JP transcription + EN translation stacked in the subtitle;
+            # runs two decodes per chunk, so roughly 2x ASR cost)
             "output_mode": "translate",
             # Language of the incoming audio, used as the model token in
             # transcribe mode (language_code stays the display language)
@@ -147,6 +150,11 @@ class Config:
         if not (0.0 <= self.window_opacity <= 1.0):
             print(f"Warning: window_opacity {self.window_opacity} out of range, resetting to default")
             self.window_opacity = DEFAULT_WINDOW_OPACITY
+            valid = False
+
+        if self.output_mode not in ("translate", "transcribe", "both"):
+            print(f"Warning: output_mode {self.output_mode!r} invalid, resetting to translate")
+            self.output_mode = "translate"
             valid = False
 
         if self.asr_backend not in ("faster_whisper", "transformers"):

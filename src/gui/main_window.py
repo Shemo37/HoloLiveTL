@@ -521,6 +521,12 @@ class ControlGUI:
                       'auto', 'float16', 'int8_float16', 'int8',
                       command=self.on_compute_type_change).pack(side="left", padx=5)
 
+        tk.Label(engine_row, text="Output:").pack(side="left", padx=(15, 5))
+        self.output_mode_var = tk.StringVar(value=getattr(self.config, 'output_mode', 'translate'))
+        tk.OptionMenu(engine_row, self.output_mode_var,
+                      'translate', 'transcribe', 'both',
+                      command=self.on_output_mode_change).pack(side="left", padx=5)
+
         # Status
         status_frame = tk.Frame(self.scrollable_frame)
         status_frame.pack(pady=10, padx=20, fill='x')
@@ -1422,6 +1428,9 @@ class ControlGUI:
 
     def on_compute_type_change(self, value=None):
         self.config.compute_type = self.compute_type_var.get()
+
+    def on_output_mode_change(self, value=None):
+        self.config.output_mode = self.output_mode_var.get()
 
     def on_opacity_change(self, event=None):
         try:
