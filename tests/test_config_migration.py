@@ -1,6 +1,7 @@
 import json
 
-from src.modules.config import Config, CONFIG_VERSION
+from src.modules.config import (Config, CONFIG_VERSION,
+                                HOLOLIVE_HOTWORD_PRESETS, merge_hotwords)
 
 
 def make_config(tmp_path, monkeypatch, contents=None):
@@ -53,6 +54,50 @@ def test_v2_config_not_remigrated(tmp_path, monkeypatch):
         "dynamic_max_chunk_duration": 15.0,  # deliberately set by the user
     })
     assert config.dynamic_max_chunk_duration == 15.0
+    assert config.config_version == CONFIG_VERSION
+
+
+def test_v2_empty_hotwords_migrated_to_preset(tmp_path, monkeypatch):
+    config = make_config(tmp_path, monkeypatch, {
+        "config_version": 2,
+        "asr_hotwords": "",
+    })
+    assert config.asr_hotwords == HOLOLIVE_HOTWORD_PRESETS["JP"]
+    assert config.config_version == CONFIG_VERSION
+
+
+def test_v2_custom_hotwords_preserved(tmp_path, monkeypatch):
+    config = make_config(tmp_path, monkeypatch, {
+        "config_version": 2,
+        "asr_hotwords": "Shirakami Fubuki, sukonbu",
+    })
+    assert config.asr_hotwords == "Shirakami Fubuki, sukonbu"
+    assert config.config_version == CONFIG_VERSION
+
+
+def test_v3_empty_hotwords_not_remigrated(tmp_path, monkeypatch):
+    # A v3 user who deliberately cleared the field keeps it empty
+    config = make_config(tmp_path, monkeypatch, {
+        "config_version": 3,
+        "asr_hotwords": "",
+    })
+    assert config.asr_hotwords == ""
+
+
+def test_hotword_presets_fit_asr_budget():
+    # faster-whisper truncates hotwords at ~223 tokens; ~700 chars of romaji
+    # stays comfortably under that, so no preset silently loses its tail
+    for branch, preset in HOLOLIVE_HOTWORD_PRESETS.items():
+        assert len(preset) < 700, f"{branch} preset too long for ASR hotwords"
+
+
+def test_merge_hotwords():
+    assert merge_hotwords("", "A, B") == "A, B"
+    assert merge_hotwords("A, B", "") == "A, B"
+    assert merge_hotwords("A, B", "b, C") == "A, B, C"  # case-insensitive dedup
+    assert merge_hotwords("A, B,", " C ,, D") == "A, B, C, D"  # stray commas/spaces
+    jp = HOLOLIVE_HOTWORD_PRESETS["JP"]
+    assert merge_hotwords(jp, jp) == jp  # idempotent
 
 
 def test_validate_new_keys(tmp_path, monkeypatch):
@@ -73,5 +118,5 @@ def test_translation_defaults(tmp_path, monkeypatch):
     config = make_config(tmp_path, monkeypatch)
     assert config.translation_engine == "whisper"
     assert config.deepl_api_key is None
-    assert config.asr_hotwords == ""
+    assert config.asr_hotwords == HOLOLIVE_HOTWORD_PRESETS["JP"]
     assert config.glossary == {}
