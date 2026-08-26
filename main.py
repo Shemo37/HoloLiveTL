@@ -17,6 +17,37 @@ os.environ['TRANSFORMERS_VERBOSITY'] = 'warning'
 os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
 
+
+def _register_cuda_dll_dirs():
+    """Make cuBLAS/cuDNN findable for CTranslate2 on Windows.
+
+    The torch CUDA wheels bundle these DLLs in torch/lib, and the nvidia-*
+    pip packages ship them under nvidia/*/bin, but neither location is on
+    the default DLL search path, so faster-whisper would silently fall back
+    to the slow transformers engine without this.
+    """
+    if os.name != 'nt':
+        return
+    import importlib.util
+    candidates = []
+    for package, subdir in (("torch", "lib"), ("nvidia", None)):
+        spec = importlib.util.find_spec(package)
+        if spec is None or not spec.submodule_search_locations:
+            continue
+        for location in spec.submodule_search_locations:
+            if subdir:
+                candidates.append(os.path.join(location, subdir))
+            else:
+                # nvidia-cublas-cu12 / nvidia-cudnn-cu12 layout: nvidia/<lib>/bin
+                for entry in os.listdir(location):
+                    candidates.append(os.path.join(location, entry, "bin"))
+    for path in candidates:
+        if os.path.isdir(path):
+            os.add_dll_directory(path)
+
+
+_register_cuda_dll_dirs()
+
 def main():
     """Main application entry point"""
     try:

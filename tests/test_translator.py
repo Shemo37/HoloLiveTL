@@ -165,3 +165,9 @@ def test_resolve_pipeline():
 
     config = SimpleNamespace(output_mode="transcribe", language_code="ja")
     assert resolve_pipeline(config, translator) == ("transcribe", "ja", False)
+
+    # "both" must still translate: the JP line is added by the dual-output
+    # path, not by downgrading the whole pipeline to transcription.
+    config = SimpleNamespace(output_mode="both", language_code="en")
+    assert resolve_pipeline(config, translator) == ("transcribe", "ja", True)
+    assert resolve_pipeline(config, None) == ("translate", "en", False)

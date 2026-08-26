@@ -166,6 +166,11 @@ class Config:
             "asr_beam_size": 5,
             # Subtitles below this confidence are dropped
             "min_confidence": 0.30,
+            # Decodes with avg_logprob below this are dropped as garbage.
+            # -1.0 is strict (good for in-domain Japanese); loosen toward
+            # -1.7 for out-of-domain audio (e.g. Thai) where real lines
+            # decode with lower certainty
+            "asr_logprob_threshold": -1.0,
             "config_version": CONFIG_VERSION
         }
 

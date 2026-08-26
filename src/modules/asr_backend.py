@@ -207,6 +207,11 @@ class FasterWhisperBackend(AsrBackend):
             # compression-ratio / logprob checks (Whisper's anti-repetition
             # fallback, which the transformers pipeline path lacked).
             "temperature": [0.0, 0.2, 0.4],
+            # Counteract beam search's short-output bias: the EN translate
+            # decode otherwise truncates to a fragment of what the JA decode
+            # hears. Mild repetition penalty also breaks "もう少し もう少し" loops.
+            "length_penalty": 1.5,
+            "repetition_penalty": 1.1,
             "compression_ratio_threshold": 2.4,
             "log_prob_threshold": -1.0,
             "no_speech_threshold": 0.6,
@@ -218,8 +223,12 @@ class FasterWhisperBackend(AsrBackend):
         }
         hotwords = (getattr(self.config, 'asr_hotwords', '') or '').strip()
         if hotwords:
-            # Per-streamer vocabulary (names, catchphrases) biases the decoder
-            options["hotwords"] = hotwords
+            # Hotword prompting collapses the kotoba-whisper-bilingual decoder
+            # into single-token garbage ('.', 'ununununun') on every chunk, so
+            # it is never forwarded. Use the glossary (text substitution on the
+            # finished line) for name correction instead.
+            logger.warning("asr_hotwords configured but disabled: hotword prompting "
+                           "breaks the %s decoder; use the glossary instead", FASTER_MODEL_ID)
         self.options = _filter_kwargs(self.model.transcribe, options)
         logger.info("faster-whisper loaded (device=%s, compute_type=%s)",
                     self.device, self.compute_type)

@@ -121,13 +121,24 @@ class FuguMTTranslator:
         self.consecutive_failures = 0
 
     def load(self):
-        from transformers import MarianMTModel, MarianTokenizer, pipeline
+        import torch
+        from transformers import MarianMTModel, MarianTokenizer
 
         print(f"Loading FuguMT translation model '{FUGUMT_MODEL_ID}' (CPU)...")
         os.makedirs(self.cache_dir, exist_ok=True)
         tokenizer = MarianTokenizer.from_pretrained(FUGUMT_MODEL_ID, cache_dir=self.cache_dir)
         model = MarianMTModel.from_pretrained(FUGUMT_MODEL_ID, cache_dir=self.cache_dir)
-        self.pipe = pipeline("translation", model=model, tokenizer=tokenizer, device=-1)
+        model.eval()
+
+        def pipe(text):
+            # transformers v5 removed the "translation" pipeline task, so
+            # drive the model directly; same output shape as the old pipeline.
+            batch = tokenizer([text], return_tensors="pt", truncation=True, max_length=512)
+            with torch.no_grad():
+                tokens = model.generate(**batch, max_new_tokens=256, num_beams=4)
+            return [{"translation_text": tokenizer.decode(tokens[0], skip_special_tokens=True)}]
+
+        self.pipe = pipe
         print("FuguMT model loaded.")
 
     def translate(self, text, context=None):

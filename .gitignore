@@ -211,3 +211,7 @@ Thumbs.db
 *copy.py
 
 
+
+# Claude Code local settings
+.claude/settings.local.json
+debug_audio/

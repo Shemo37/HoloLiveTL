@@ -17,12 +17,13 @@ import string
 import traceback
 import logging
 from collections import deque
-from queue import Queue, Full
+from queue import Queue, Full, Empty
 
 from .audio_utils import enhance_audio_quality
 from .model_utils import ensure_model_downloaded
 from .asr_backend import create_backend
-from .filters import post_process_translation, is_hallucination, is_low_confidence
+from .filters import (post_process_translation, is_hallucination,
+                      is_low_confidence, trim_degenerate_tail)
 from .translator import create_translator, apply_glossary, TranslatorUnavailable
 from .diarization_worker import diarization_worker
 from .config import SAMPLE_RATE, MODEL_ID
@@ -35,12 +36,14 @@ def resolve_pipeline(config, translator):
 
     With a text translator active, ASR transcribes Japanese and the translator
     produces the English; otherwise Whisper's built-in translate task is used.
+    "both" needs the translation too (the JP line comes from the text-translator
+    transcription or a second decode); only pure "transcribe" mode skips it.
     """
-    if config.output_mode == "translate":
-        if translator is not None:
-            return "transcribe", "ja", True
-        return "translate", "en", False
-    return "transcribe", getattr(config, 'source_language_code', 'ja'), False
+    if config.output_mode == "transcribe":
+        return "transcribe", getattr(config, 'source_language_code', 'ja'), False
+    if translator is not None:
+        return "transcribe", "ja", True
+    return "translate", "en", False
 
 
 def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
@@ -109,9 +112,18 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
         gui_queue.put(("engine", engine_desc))
         gui_queue.put(("model_loaded", None))
 
+        # HOLOTL_DEBUG_AUDIO=1 dumps every chunk sent to ASR as a WAV into
+        # debug_audio/ so capture problems can be heard/inspected directly.
+        debug_audio_dir = None
+        if os.environ.get('HOLOTL_DEBUG_AUDIO'):
+            debug_audio_dir = os.path.abspath('debug_audio')
+            os.makedirs(debug_audio_dir, exist_ok=True)
+            print(f"Debug audio dump enabled: {debug_audio_dir}")
+
         translator = str.maketrans('', '', string.punctuation)
         translation_history = []
         min_confidence = float(getattr(config, 'min_confidence', 0.30) or 0.0)
+        logprob_threshold = float(getattr(config, 'asr_logprob_threshold', -1.0) or -1.0)
         glossary = getattr(config, 'glossary', {}) or {}
         source_context = deque(maxlen=2)  # recent JA lines, sent to DeepL as context
         subtitle_id = 0
@@ -127,6 +139,16 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
             try:
                 audio_chunk_np = audio_queue.get(timeout=1)
                 raw_audio = audio_chunk_np.flatten()
+
+                if debug_audio_dir is not None:
+                    try:
+                        from scipy.io import wavfile
+                        name = f"chunk_{time.strftime('%H%M%S')}_{int(time.time() * 1000) % 1000:03d}.wav"
+                        wavfile.write(os.path.join(debug_audio_dir, name), SAMPLE_RATE,
+                                      (np.clip(raw_audio, -1.0, 1.0) * 32767).astype(np.int16))
+                        print(f"[debug] dumped {name} ({len(raw_audio) / SAMPLE_RATE:.2f}s)")
+                    except Exception as e:
+                        logger.warning(f"debug audio dump failed: {e}")
 
                 if not config.use_dynamic_chunking:
                     # Gate on the RAW signal BEFORE enhancement: normalization
@@ -172,7 +194,7 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
 
                 # Decoder-statistics gates first (real signal, cheap), then
                 # the string filters for phrases that score fine on logprob
-                low_conf, reason = is_low_confidence(result)
+                low_conf, reason = is_low_confidence(result, logprob_threshold=logprob_threshold)
                 if not low_conf and confidence_score < min_confidence:
                     low_conf, reason = True, f"confidence {confidence_score:.2f} < {min_confidence:.2f}"
                 if low_conf:
@@ -205,6 +227,13 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                         stats.add_chunk(time.time() - start_time, True, False, confidence_score)
                         continue
 
+                # Salvage the clean prefix when the decode degenerates into a
+                # repetition loop mid-line; only fully-junk lines get dropped.
+                trimmed = trim_degenerate_tail(processed_text)
+                if trimmed != processed_text:
+                    print(f"Trimmed degenerate tail: kept {len(trimmed)}/{len(processed_text)} chars")
+                    processed_text = trimmed
+
                 is_hallucination_result = is_hallucination(processed_text, translator, translation_history)
                 was_hallucination = is_hallucination_result
 
@@ -224,13 +253,19 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
                             try:
                                 jp_result = backend.transcribe(
                                     audio_data, task="transcribe", language=source_lang)
-                                jp_low, jp_reason = is_low_confidence(jp_result)
+                                jp_low, jp_reason = is_low_confidence(
+                                    jp_result, logprob_threshold=logprob_threshold)
                                 if not jp_low:
                                     jp_text = jp_result.text.strip()
                                 else:
                                     logger.debug(f"Dropped JP line ({jp_reason})")
                             except Exception as e:
                                 logger.warning(f"JP transcription decode failed: {e}")
+                        if jp_text:
+                            jp_text = trim_degenerate_tail(jp_text).strip() or None
+                        if jp_text and is_hallucination(jp_text, translator, []):
+                            logger.debug(f"Dropped JP line (boilerplate/hallucination): {jp_text!r}")
+                            jp_text = None
                         if jp_text:
                             subtitle_text = f"{jp_text}\n{processed_text}"
 
@@ -258,10 +293,12 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
 
                 stats.add_chunk(time.time() - start_time, had_translation, was_hallucination, confidence_score)
 
+            except Empty:
+                # No audio within the poll timeout; just loop again.
+                continue
             except Exception as e:
-                if "timeout" not in str(e).lower():
-                    print(f"Processor error: {e}")
-                    traceback.print_exc()
+                print(f"Processor error: {e}")
+                traceback.print_exc()
                 stats.add_chunk(time.time() - start_time, False, False)
 
     except Exception as e:

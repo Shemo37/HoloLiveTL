@@ -1,45 +1,18 @@
 import re
 
-# Hallucination filters
-# Substring matches: phrases that are near-certain Whisper hallucinations even
-# in the middle of a longer line. Conversational phrases that legitimately occur
-# in stream speech ("let me know", "subscribe", "i cannot"...) were moved to the
-# whole-line filter below so they no longer delete valid translations.
-SUBSTRING_HALLUCINATION_FILTER = [
-    "thank you for watching", "thanks for watching", "bell icon",
-    "see you next time", "in the next video", "like and subscribe",
-    "hit the bell", "as a language model", "provide more context",
-    "forget to subscribe",
-    "i'm an ai", "context is needed",
-    "in central tokyo, the temperature is likely to rise rapidly from morning",
-    "in central tokyo", "the temperature is likely to rise"
+# The phrase-based hallucination lists (exact / whole-line / substring English
+# phrase matching) were removed by request: short real utterances ("thank you",
+# "okay", "I see") are legitimate subtitles, especially when the EN line is a
+# compressed translation. Only structural junk detection remains below.
+
+# Refusal boilerplate the kotoba-whisper-bilingual model leaks from its
+# LLM-generated training data. Checked with plain substring matching because
+# \b word boundaries don't work inside Japanese text.
+BOILERPLATE_FILTER = [
+    "正確な翻訳を提供できません", "翻訳を提供できません", "文脈が不明確",
+    "翻訳できません", "cannot provide an accurate translation",
+    "the context is unclear",
 ]
-
-# Whole-line matches (after punctuation stripping): only hallucinations when
-# they are the entire output.
-WHOLE_LINE_HALLUCINATION_FILTER = {
-    "dont forget", "to subscribe", "subscribe", "comment below",
-    "let me know", "i cannot", "i dont have access", "please provide",
-    "more information",
-}
-
-EXACT_MATCH_HALLUCINATION_FILTER = {
-    "i see", "i understand", "i know", "i'm sorry", "thank you", "thanks",
-    "you're welcome", "okay", "ok", "all right", "alright", "got it", "right",
-    "of course", "excuse me", "please", "the end", "hello", "hi", "hey",
-    "um", "uh", "hmm", "well", "so", "like", "you know", "that's right", 
-    "such as", "i see, i see", "alright i see", "ah i see", "sound good", 
-    "oh i see", "heav-ho", "mm-hmm", "uh-huh", "yeah", "yep", "nope", "nah"
-}
-
-PRESERVE_SOUNDS = {
-    "ah", "oh", "wow", "no", "yes", "stop", "help", "wait", "go", "come",
-    "aah", "ooh", "eeh", "kyaa", "waa", "haa", "yaa", "noo", "ahh", "ohh",
-    "nya", "uwu", "owo", "ara", "ehe", "ehehe", "hehe", "hihi", "hoho",
-    "yay", "yey", "yup", "nope", "mhm", "mmm", "hmm", "huh", "eh",
-    "gg", "nice", "good", "bad", "fail", "win", "lose", "dead", "alive",
-    "hai", "iie", "sou", "nani", "mou", "demo", "kedo", "desu", "masu"
-}
 
 QUALITY_INDICATORS = {
     "repetitive_patterns": [r"(.{1,10})\1{3,}", r"(\w+\s+)\1{2,}"],
@@ -47,9 +20,33 @@ QUALITY_INDICATORS = {
     "filler_heavy": [r"\b(um|uh|ah|eh|mm)\b.*\b(um|uh|ah|eh|mm)\b.*\b(um|uh|ah|eh|mm)\b"]
 }
 
+# Patterns marking the onset of decoder degeneration (repetition loops, letter
+# soup). Used to TRIM the junk tail off a line rather than discard the whole
+# line: the prefix before the loop started is usually a valid decode.
+DEGENERATE_TAIL_PATTERNS = [r"(.{1,10})\1{3,}", r"(\w+\s+)\1{2,}", r"[a-z]{25,}"]
+
+
+def trim_degenerate_tail(text):
+    """Cut a decode at the point where it collapses into repetition junk.
+
+    Returns the clean prefix (possibly '' when the junk starts at the
+    beginning). Repetition loops poison only the tail; the text before them
+    is worth delivering.
+    """
+    cut = len(text)
+    for pattern in DEGENERATE_TAIL_PATTERNS:
+        m = re.search(pattern, text, flags=re.IGNORECASE)
+        if m:
+            cut = min(cut, m.start())
+    if cut >= len(text):
+        return text
+    return text[:cut].rstrip(" ,;:-–—")
+
 def post_process_translation(text):
     """Clean up and improve translation text"""
     text = ' '.join(text.split())
+    # The kotoba translate decode often opens mid-sentence with ", so ..."
+    text = re.sub(r'^[\s,;:]+', '', text)
     text = re.sub(r'\s+([,.!?;:])', r'\1', text)
     text = re.sub(r'([.!?])\s*([a-z])', r'\1 \2', text)
     text = re.sub(r'(^|[.!?]\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)
@@ -72,22 +69,17 @@ def is_hallucination(text, translator, translation_history):
     
     text_lower = text.lower().strip()
     text_clean = text.translate(translator).lower().strip()
-    
-    # Check exact matches
-    if text_clean in EXACT_MATCH_HALLUCINATION_FILTER:
-        if text_clean not in PRESERVE_SOUNDS:
+
+    # Punctuation-only output ('.', '!!', '...') carries no content; this
+    # must hold even when the confidence gates are tuned loose.
+    if not text_clean:
+        return True
+
+    # Model-leaked refusal boilerplate (JP or EN), plain substring match
+    for phrase in BOILERPLATE_FILTER:
+        if phrase in text or phrase in text_lower:
             return True
 
-    # Phrases that are only hallucinations as the entire line
-    if text_clean in WHOLE_LINE_HALLUCINATION_FILTER:
-        return True
-    
-    # Check substring matches
-    for phrase in SUBSTRING_HALLUCINATION_FILTER:
-        pattern = r'\b' + re.escape(phrase) + r'\b'
-        if re.search(pattern, text_lower):
-            return True
-    
     # Quality checks
     for pattern_list in QUALITY_INDICATORS.values():
         for pattern in pattern_list:
