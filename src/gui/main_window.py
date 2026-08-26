@@ -16,7 +16,7 @@ import logging
 from collections import deque
 
 # Import our modular components
-from modules.config import Config, SPEAKER_COLORS
+from modules.config import Config, SPEAKER_COLORS, HOLOLIVE_HOTWORD_PRESETS, merge_hotwords
 from modules.stats import TranslatorStats
 from modules.audio_utils import find_audio_device
 from modules.recorder import recorder_thread
@@ -803,11 +803,23 @@ class ControlGUI:
         hotwords_frame.pack(pady=5, fill="x")
 
         tk.Label(hotwords_frame, text="Names and terms to recognize correctly, comma-separated.\n"
-                                      "Example: Shirakami Fubuki, sukonbu, Kurokami",
+                                      "Use the buttons to add hololive branch rosters. The ASR only\n"
+                                      "uses roughly the first 40 names, so keep the list focused.",
                  font=("Helvetica", 9), fg="gray", justify="left").pack(anchor='w')
 
         self.hotwords_var = tk.StringVar(value=self.config.asr_hotwords or "")
         tk.Entry(hotwords_frame, textvariable=self.hotwords_var, width=50).pack(fill='x', pady=5)
+
+        preset_row = tk.Frame(hotwords_frame)
+        preset_row.pack(anchor='w', pady=(0, 2))
+        for branch in HOLOLIVE_HOTWORD_PRESETS:
+            tk.Button(preset_row, text=f"+ {branch}",
+                      command=lambda b=branch: self.hotwords_var.set(
+                          merge_hotwords(self.hotwords_var.get(),
+                                         HOLOLIVE_HOTWORD_PRESETS[b]))
+                      ).pack(side="left", padx=2)
+        tk.Button(preset_row, text="Clear",
+                  command=lambda: self.hotwords_var.set("")).pack(side="left", padx=8)
 
         # Tab 3: Appearance
         appearance_tab = tk.Frame(settings_notebook, padx=10, pady=10)

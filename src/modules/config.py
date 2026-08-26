@@ -5,7 +5,7 @@ import json
 import os
 
 # Constants
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 MODEL_ID = "kotoba-tech/kotoba-whisper-bilingual-v1.0"
 # Pre-converted CTranslate2 build of the same weights, used by faster-whisper
 FASTER_MODEL_ID = "kotoba-tech/kotoba-whisper-bilingual-v1.0-faster"
@@ -36,6 +36,54 @@ SPEAKER_COLORS = [
     "#98D8C8",  # Mint
     "#F7DC6F",  # Gold
 ]
+
+# Hololive talent roster presets for ASR hotwords, per branch (active as of
+# early 2026). faster-whisper truncates the hotword string at ~223 tokens
+# (roughly 40 names), so the branches ship as separate presets instead of one
+# giant list; only JP is on by default and the rest are added from the GUI.
+HOLOLIVE_HOTWORD_PRESETS = {
+    "JP": (
+        "Tokino Sora, Roboco, Sakura Miko, Hoshimachi Suisei, AZKi, "
+        "Shirakami Fubuki, Natsuiro Matsuri, Aki Rosenthal, Akai Haato, "
+        "Murasaki Shion, Nakiri Ayame, Yuzuki Choco, Oozora Subaru, "
+        "Ookami Mio, Nekomata Okayu, Inugami Korone, Usada Pekora, "
+        "Shiranui Flare, Shirogane Noel, Houshou Marine, Amane Kanata, "
+        "Tsunomaki Watame, Tokoyami Towa, Himemori Luna, Yukihana Lamy, "
+        "Momosuzu Nene, Shishiro Botan, Omaru Polka, La+ Darknesss, "
+        "Takane Lui, Hakui Koyori, Kazama Iroha"
+    ),
+    "DEV_IS": (
+        "Hiodoshi Ao, Otonose Kanade, Ichijou Ririka, Juufuutei Raden, "
+        "Todoroki Hajime, Isaki Riona, Koganei Niko, Mizumiya Su, "
+        "Rindo Chihaya, Kikirara Vivi"
+    ),
+    "EN": (
+        "Mori Calliope, Takanashi Kiara, Ninomae Ina'nis, IRyS, "
+        "Ouro Kronii, Nanashi Mumei, Hakos Baelz, Shiori Novella, "
+        "Koseki Bijou, Nerissa Ravencroft, Fuwawa Abyssgard, "
+        "Mococo Abyssgard, Elizabeth Rose Bloodflame, Gigi Murin, "
+        "Cecilia Immergreen, Raora Panthera"
+    ),
+    "ID": (
+        "Ayunda Risu, Moona Hoshinova, Airani Iofifteen, Kureiji Ollie, "
+        "Anya Melfissa, Pavolia Reine, Vestia Zeta, Kaela Kovalskia, "
+        "Kobo Kanaeru"
+    ),
+}
+
+
+def merge_hotwords(existing: str, preset: str) -> str:
+    """Append preset terms not already in the comma-separated hotword string
+    (case-insensitive), preserving the user's existing entries and order."""
+    current = [term.strip() for term in (existing or "").split(",") if term.strip()]
+    seen = {term.lower() for term in current}
+    for term in (preset or "").split(","):
+        term = term.strip()
+        if term and term.lower() not in seen:
+            current.append(term)
+            seen.add(term.lower())
+    return ", ".join(current)
+
 
 # Model cache directory
 MODEL_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "translator_models")
@@ -105,7 +153,7 @@ class Config:
             "translation_engine": "whisper",
             "deepl_api_key": None,
             # Comma-separated names/terms fed to the ASR decoder as hotwords
-            "asr_hotwords": "",
+            "asr_hotwords": HOLOLIVE_HOTWORD_PRESETS["JP"],
             # {"wrong": "right"} whole-word fixes applied to English output
             "glossary": {},
 
@@ -144,17 +192,27 @@ class Config:
             config["asr_beam_size"] = loaded_config["beam_size"]
         config.pop("beam_size", None)
 
-        if loaded_config.get("config_version"):
-            return
-        old_defaults_to_new = {
-            "dynamic_max_chunk_duration": (15.0, 8.0),
-            "dynamic_silence_timeout": (1.2, 0.9),
-        }
-        for key, (old_default, new_default) in old_defaults_to_new.items():
-            if config.get(key) == old_default:
-                print(f"Config migration: {key} {old_default} -> {new_default}")
-                config[key] = new_default
-        config["config_version"] = CONFIG_VERSION
+        loaded_version = loaded_config.get("config_version") or 1
+
+        if loaded_version < 2:
+            old_defaults_to_new = {
+                "dynamic_max_chunk_duration": (15.0, 8.0),
+                "dynamic_silence_timeout": (1.2, 0.9),
+            }
+            for key, (old_default, new_default) in old_defaults_to_new.items():
+                if config.get(key) == old_default:
+                    print(f"Config migration: {key} {old_default} -> {new_default}")
+                    config[key] = new_default
+
+        if loaded_version < 3:
+            # asr_hotwords used to default to empty; seed the hololive JP
+            # roster unless the user already typed their own list
+            if config.get("asr_hotwords", "") == "":
+                print("Config migration: asr_hotwords -> hololive JP preset")
+                config["asr_hotwords"] = HOLOLIVE_HOTWORD_PRESETS["JP"]
+
+        if loaded_version < CONFIG_VERSION:
+            config["config_version"] = CONFIG_VERSION
 
     def save_config(self):
         """Save current configuration to file"""
